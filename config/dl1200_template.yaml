@@ -1,0 +1,65 @@
+# Apperson DataLink 1200 / AccuScan 28040 form geometry
+# All coordinates are normalized (0.0 to 1.0) relative to the registered page.
+# Calibrated from real scantron images (Botello flatbed scan, 1700x2200 canonical).
+
+form:
+  name: "Apperson DataLink 1200"
+  model: "AccuScan 28040"
+  orientation: "portrait"
+
+# Canonical registered image dimensions (reference at 300 DPI for 8.5x11 sheet)
+canonical:
+  width_px: 1700
+  height_px: 2200
+
+timing_marks:
+  top_edge:
+    y: 0.012
+    start_x: 0.04
+    end_x: 0.96
+    expected_count: 53
+  left_edge:
+    x: 0.018
+    start_y: 0.067
+    end_y: 0.91
+    expected_count: 60
+
+student_id:
+  num_digits: 9
+  grid:
+    # Each digit column: values 0-9 go top-to-bottom
+    first_digit_x: 0.1218
+    digit_spacing_x: 0.0499
+    digit_values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    first_value_y: 0.0745
+    value_spacing_y: 0.0128
+  bubble_radius: 0.006
+
+answers:
+  num_questions: 100
+  choices: [A, B, C, D, E]
+  bubble_radius: 0.006
+
+  # Left column: questions 1-50
+  left_column:
+    question_range: [1, 50]
+    first_question_y: 0.2164
+    question_spacing_y: 0.01400
+    choice_x:
+      A: 0.1212
+      B: 0.1712
+      C: 0.2212
+      D: 0.2712
+      E: 0.3212
+
+  # Right column: questions 51-100
+  right_column:
+    question_range: [51, 100]
+    first_question_y: 0.2164
+    question_spacing_y: 0.01400
+    choice_x:
+      A: 0.4712
+      B: 0.5212
+      C: 0.5706
+      D: 0.6212
+      E: 0.6706

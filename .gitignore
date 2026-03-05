@@ -1,2 +1,7 @@
+scantrons/
 report_*.txt
 .DS_Store
+__pycache__/
+*.pyc
+data/output/
+output_smoke/

@@ -1,6 +1,7 @@
-# Development dependencies
-pillow
-scipy
+# Runtime dependencies
 numpy
 opencv-python
 opencv-python-headless
+pillow
+pyyaml
+scipy

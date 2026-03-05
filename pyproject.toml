@@ -1,0 +1,22 @@
+[project]
+name = "datalink-1200-python-grader"
+version = "26.03"
+description = "Python OMR grader for Apperson DataLink 1200 bubble sheets"
+license = {file = "LICENSE.MIT"}
+requires-python = ">=3.12"
+dependencies = [
+	"numpy",
+	"opencv-python",
+	"pillow",
+	"pyyaml",
+	"scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+	"bandit",
+	"packaging",
+	"pyflakes",
+	"pytest",
+	"rich",
+]
