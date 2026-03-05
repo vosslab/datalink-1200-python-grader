@@ -1,0 +1,6 @@
+# Development dependencies
+pillow
+scipy
+numpy
+opencv-python
+opencv-python-headless
