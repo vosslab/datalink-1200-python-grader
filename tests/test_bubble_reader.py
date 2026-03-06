@@ -11,6 +11,7 @@ import pytest
 import git_file_utils
 import omr_utils.template_loader
 import omr_utils.bubble_reader
+import omr_utils.debug_drawing
 import omr_utils.image_registration
 
 REPO_ROOT = git_file_utils.get_repo_root()
@@ -525,6 +526,49 @@ class TestRowLinearity:
 		assert "A" not in outlier_choices
 		assert "C" not in outlier_choices
 		assert "E" not in outlier_choices
+
+
+#============================================
+class TestRefinementShiftData:
+	"""Tests for refinement-shift diagnostics in debug overlay."""
+
+	@pytest.fixture()
+	def template(self) -> dict:
+		"""Load template for shift diagnostics tests."""
+		loaded = omr_utils.template_loader.load_template(TEMPLATE_PATH)
+		return loaded
+
+	def test_local_similarity_flags_outlier_shift(self, template: dict) -> None:
+		"""A local shift outlier should be marked as not locally similar."""
+		choices = template["answers"]["choices"]
+		results = []
+		for q_num in range(1, 6):
+			positions = {}
+			scores = {}
+			for choice in choices:
+				norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
+					template, q_num, choice)
+				px, py = omr_utils.template_loader.to_pixels(
+					norm_x, norm_y, 1700, 2200)
+				# mostly small right shift, with one outlier on q3/A
+				if q_num == 3 and choice == "A":
+					positions[choice] = (px + 8, py)
+				else:
+					positions[choice] = (px + 1, py)
+				scores[choice] = 0.0
+			entry = {
+				"question": q_num,
+				"answer": "",
+				"scores": scores,
+				"flags": "BLANK",
+				"positions": positions,
+				"edges": {},
+			}
+			results.append(entry)
+		shift_data = omr_utils.debug_drawing._compute_refinement_shift_data(
+			results, template, 1700, 2200)
+		assert shift_data[(3, "A")]["local_ok"] is False
+		assert shift_data[(2, "A")]["local_ok"] is True
 
 
 #============================================

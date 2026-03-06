@@ -4,6 +4,12 @@
 
 ### Additions and New Features
 
+- Added [docs/BUBBLE_REFACTOR_EXECUTION_PLAN.md](BUBBLE_REFACTOR_EXECUTION_PLAN.md), a manager-grade execution plan for a modular bubble-reader refactor with milestone/workstream/work-package structure, dependency IDs, measurable gates, patch cadence, and rollout controls
+- Expanded the new plan to include a complete `dl1200_template.yaml` concept reboot (template v2 schema + migrator), anchor-first relative-coordinate mapping using left dark dashes and top dark boxes, distortion-stress gates, and explicit retention of dual measurement zones after localization
+- Added [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) with timing-mark detection for left-edge dashes and top-edge boxes, plus axis transform estimation for anchor-relative coordinates
+- Added stage helpers `_stage_localize_rows()`, `_stage_measure_rows()`, and `_stage_decide_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) so `read_answers()` orchestrates modular stages instead of embedding the full pipeline in one function
+- Added `_compute_dual_zone_means()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) to preserve explicit left/right measurement zones and keep `_compute_edge_mean()` as a dual-zone aggregate
+- Added [tests/test_timing_mark_anchors.py](../tests/test_timing_mark_anchors.py) with synthetic coverage for identity fallback, axis transform recovery, and low-mark-count fallback behavior
 - Added `_default_bounds()` helper in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) to centralize float-to-int conversion for bubble edge positions; used by refinement, validation, scoring, and drawing functions
 - Added `_check_row_linearity()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) with median-based inlier/outlier detection; identifies choices where Sobel-y locked onto the wrong edge pair by checking if their y-centers deviate from the row median, then fits a line through inliers to predict corrected positions
 - Added `_check_column_alignment()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) to verify x-center consistency within each choice column; flags positions that deviate from the column median
@@ -11,14 +17,32 @@
 - Added regression test `test_all_students_detect_at_least_71` in [tests/test_bubble_reader.py](../tests/test_bubble_reader.py) verifying all student images (including phone photos) detect >= 71 answers
 - Added `TestRowLinearity` tests: aligned row produces no outliers, single outlier detected, two minority outliers detected while majority preserved
 - Added `TestRowBrightness` tests: normal mixed-brightness row passes, all-white row is flagged
+- Added [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) with cryoEM-inspired class averaging: extracts many instances of each printed bubble letter (A-E) from empty bubbles, quality-scores and median-stacks them to produce clean 5X oversize reference templates (300x55 pixels)
+- Added [omr_utils/template_matcher.py](../omr_utils/template_matcher.py) with local NCC (normalized cross-correlation) bubble refinement using `cv2.matchTemplate(TM_CCOEFF_NORMED)` within a 15px search window around approximate positions
+- Added [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py), extracted from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) to reduce its size from 1163 to ~960 lines; contains `draw_answer_debug()` and `_compute_refinement_shift_data()`
+- Added [extract_bubble_templates.py](../extract_bubble_templates.py) CLI script for extracting pixel templates from registered scantron images
+- Added `config/bubble_templates/` directory with 5 grayscale PNG reference templates (A.png through E.png) extracted from the answer key scan
+- Added `_stage_template_refine()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) as an optional NCC refinement pass between localization and measurement stages
+- Added `mark_index_to_normalized()` and `normalized_to_mark_index()` to [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) for converting between fractional timing mark indices and normalized coordinates
+- Added `_ensure_mark_indices()`, `_ensure_coordinates()`, and `migrate_template_to_v3()` to [omr_utils/template_loader.py](../omr_utils/template_loader.py) for v3 template format with timing mark index notation
+- Added [tests/test_bubble_template_extractor.py](../tests/test_bubble_template_extractor.py) with 10 tests for template extraction, quality scoring, save/load round-trip, and scaling
+- Added [tests/test_template_matcher.py](../tests/test_template_matcher.py) with 6 tests for local NCC matching, row refinement, template loading, and integration comparison with Sobel
+- Added `TestV3Migration` tests (5 tests) in [tests/test_template_loader.py](../tests/test_template_loader.py) for v3 YAML loading, round-trip precision, and backward compatibility
+- Added `TestMarkIndexConversion` tests (4 tests) in [tests/test_timing_mark_anchors.py](../tests/test_timing_mark_anchors.py) for mark index conversion, round-trip, and fractional interpolation
 
 ### Behavior or Interface Changes
 
+- `read_answers()` now computes an anchor transform from timing marks and applies a conservative safety filter (`_sanitize_anchor_transform()`) so only high-confidence near-identity corrections are used at runtime
+- `read_answers()` behavior is unchanged at the output interface level, but internally now executes modular localization, measurement, and decision stages
 - Bubble geometry values in [omr_utils/template_loader.py](../omr_utils/template_loader.py) `get_bubble_geometry_px()` now return float values for sub-pixel precision in validation math; consumers use `_default_bounds()` for integer conversion at array-slicing boundaries
 - Updated `half_height` from 0.00273 to 0.00250 in [config/dl1200_template.yaml](../config/dl1200_template.yaml) for closer match to physical ~6:1 bubble aspect ratio (5.5px at canonical 2200h)
 - Updated `measurement_inset_v` from 0.00136 to 0.00091 (3px to 2px at canonical) for wider 8px measurement zone (was 6px)
 - Tightened `_validate_bubble_rect()` height deviation threshold from 50% to 40% and added explicit aspect ratio check (5.0-6.5 range)
 - `read_answers()` now applies three post-refinement validation passes: row linearity correction, edge mean measurement, and brightness sanity check with automatic re-measurement for all-white rows
+- `read_answers()` now accepts optional `bubble_templates` parameter and runs NCC template matching refinement when pixel templates are available; auto-loads from `config/bubble_templates/` if not provided
+- [config/dl1200_template.yaml](../config/dl1200_template.yaml) upgraded from v2 (hardcoded normalized coordinates) to v3 (fractional timing mark indices); bubble positions are now expressed in the timing mark coordinate frame rather than as pixel-derived coordinates
+- `load_template()` now normalizes all templates to v3, computing both mark indices and normalized coordinates in memory for backward compatibility; accepts v1, v2, or v3 YAML inputs
+- Template matching is conservative: only applies x-corrections with confidence > 0.45 and shift <= 4px, preventing regressions on phone photos where templates extracted from flatbed scans may not match well
 
 ### Fixes and Maintenance
 
@@ -28,12 +52,16 @@
 
 - Chose median-based inlier identification over pure line-fit for row linearity: fitting a line to all 5 points fails when 2 of 5 are wrong (the fitted line gets pulled to an intermediate position, flagging all 5 as outliers); median is robust to minority outliers and correctly identifies the 2-3 bad choices
 - Float geometry with `_default_bounds()` helper chosen over scattered `int()` casts or int-only geometry; `int(cy - 5.5) = int(44.5) = 44` gives 11px total height which couldn't be achieved with int half_height (either 5 or 6, giving 10 or 12px)
+- V3 template format stores bubble positions as fractional timing mark indices (e.g., Q1 at left mark 10.4562, choice A at top mark 4.5896) instead of hardcoded normalized coordinates; this structural representation is invariant across scans of the same form model
+- 5X oversize template storage (300x55 pixels for a canonical 60x11 bubble) preserves sub-pixel averaging detail from cryoEM-style class averaging; templates are scaled down to actual bubble dimensions at runtime
+- Mark index round-trip precision is < 0.0001 in normalized coordinates (sub-pixel accuracy at any practical image resolution); 4 decimal places in the YAML provide sufficient precision
 
 ### Developer Tests and Notes
 
-- 269 tests pass across all test files (was 263)
-- Detection counts: answer key 71/71, phone photo 71/71 (was 69), both flatbed scans 71/71
-- All pyflakes clean
+- 327 tests pass across all test files (was 269)
+- Detection counts: answer key 71/71, phone photo 71/71, both flatbed scans 71/71
+- All pyflakes clean (36 files checked)
+- V3 round-trip verification: Q1A original (0.1212, 0.2164) -> round-trip (0.121201, 0.216400), error < 1e-6
 
 ---
 

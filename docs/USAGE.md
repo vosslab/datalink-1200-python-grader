@@ -91,6 +91,44 @@ source source_me.sh && python grade_answers.py \
 | `-k`, `--key` | Path to answer key CSV (required) |
 | `-o`, `--output` | Path for graded results CSV (required) |
 
+### migrate_template_to_v2.py -- template migration
+
+Convert a legacy template using `answers.bubble_geometry` into v2 shape-contract
+format using `answers.bubble_shape`.
+
+```bash
+source source_me.sh && python migrate_template_to_v2.py \
+  -i config/dl1200_template.yaml \
+  -o config/dl1200_template.v2.yaml
+```
+
+| Flag | Description |
+| --- | --- |
+| `-i`, `--input` | Path to input template YAML (required) |
+| `-o`, `--output` | Path for migrated template YAML (required) |
+
+### refine_template_from_empty_fits.py -- template calibration
+
+Learn refined answer-grid coordinates from high-confidence empty bubble fits
+across one image or a directory of images.
+
+```bash
+source source_me.sh && python refine_template_from_empty_fits.py \
+  -i scantrons/ \
+  -t config/dl1200_template.yaml \
+  -o output/refined_template.yaml
+```
+
+| Flag | Description |
+| --- | --- |
+| `-i`, `--input` | Image file or directory to use for refinement (required) |
+| `-o`, `--output` | Path for refined template YAML (required) |
+| `-t`, `--template` | Path to base template YAML (default: `config/dl1200_template.yaml`) |
+| `-r`, `--registered` | Skip registration (input images already canonical) |
+| `--empty-score-max` | Max score treated as empty candidate (default: `0.12`) |
+| `--min-samples` | Min samples per bubble before applying correction (default: `2`) |
+| `--outlier-radius-px` | Outlier trim radius for per-bubble offsets (default: `6.0`) |
+
 ## Examples
 
 Register a single phone photo and extract answers:

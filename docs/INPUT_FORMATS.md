@@ -20,6 +20,21 @@ Apperson DataLink 1200 / AccuScan #28040 bubble sheet:
 - 9-digit student ID grid
 - Portrait orientation when correctly oriented
 
+## Template YAML format
+
+The default template file is `config/dl1200_template.yaml`.
+
+Template v2 uses a minimal bubble shape contract:
+
+- `template_version: 2`
+- `answers.bubble_shape.aspect_ratio`
+- `answers.bubble_shape.target_area_px_at_canonical`
+
+Bubble measurement geometry is derived at runtime from these two values plus
+the canonical dimensions and image size. Legacy v1 templates with
+`answers.bubble_geometry` are still accepted and are migrated to v2 shape
+fields in memory by the loader.
+
 ## Image sources
 
 ### Phone photos

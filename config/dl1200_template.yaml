@@ -1,11 +1,14 @@
 # Apperson DataLink 1200 / AccuScan 28040 form geometry
-# All coordinates are normalized (0.0 to 1.0) relative to the registered page.
-# Calibrated from real scantron images (Botello flatbed scan, 1700x2200 canonical).
+# Bubble positions are expressed as fractional timing mark indices.
+# The loader converts mark indices to normalized coordinates at runtime
+# using the timing mark edge definitions below.
 
 form:
   name: "Apperson DataLink 1200"
   model: "AccuScan 28040"
   orientation: "portrait"
+
+template_version: 3
 
 # Canonical registered image dimensions (reference at 300 DPI for 8.5x11 sheet)
 canonical:
@@ -28,48 +31,46 @@ student_id:
   num_digits: 9
   grid:
     # Each digit column: values 0-9 go top-to-bottom
-    first_digit_x: 0.1218
-    digit_spacing_x: 0.0499
+    # Positions expressed as fractional timing mark indices
+    first_digit_mark_index: 4.6235
+    digit_spacing_marks: 2.8204
     digit_values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    first_value_y: 0.0745
-    value_spacing_y: 0.0128
+    first_value_mark_index: 0.5249
+    value_spacing_marks: 0.8958
   bubble_radius: 0.006
 
 answers:
   num_questions: 100
   choices: [A, B, C, D, E]
   bubble_radius: 0.006
-  bubble_geometry:
-    half_width: 0.01765       # 30px at 1700w
-    half_height: 0.00250      # 5.5px at 2200h (physical ~6:1 aspect ratio)
-    center_exclusion: 0.00647 # 11px at 1700w
-    bracket_edge_height: 0.00091  # 2px at 2200h
-    measurement_inset_v: 0.00091  # 2px at 2200h
-    measurement_inset_h: 0.00176  # 3px at 1700w
-    refine_max_shift: 0.00364     # 8px at 2200h
-    refine_pad_v: 0.00364         # 8px at 2200h
-    refine_pad_h: 0.00471         # 8px at 1700w
+  bubble_shape:
+    # Only two fixed shape controls are required.
+    # Runtime geometry is derived from these values.
+    aspect_ratio: 5.454545        # width / height (canonical 60x11)
+    target_area_px_at_canonical: 660.0
 
   # Left column: questions 1-50
+  # Row positions use left-edge mark indices (y-axis)
+  # Choice positions use top-edge mark indices (x-axis)
   left_column:
     question_range: [1, 50]
-    first_question_y: 0.2164
-    question_spacing_y: 0.01400
-    choice_x:
-      A: 0.1212
-      B: 0.1712
-      C: 0.2212
-      D: 0.2712
-      E: 0.3212
+    first_row_mark_index: 10.4562
+    row_spacing_marks: 0.9798
+    choice_mark_indices:
+      A: 4.5896
+      B: 7.4157
+      C: 10.2417
+      D: 13.0678
+      E: 15.8939
 
   # Right column: questions 51-100
   right_column:
     question_range: [51, 100]
-    first_question_y: 0.2164
-    question_spacing_y: 0.01400
-    choice_x:
-      A: 0.4712
-      B: 0.5212
-      C: 0.5706
-      D: 0.6212
-      E: 0.6706
+    first_row_mark_index: 10.4562
+    row_spacing_marks: 0.9798
+    choice_mark_indices:
+      A: 24.3722
+      B: 27.1983
+      C: 29.9904
+      D: 32.8504
+      E: 35.6426

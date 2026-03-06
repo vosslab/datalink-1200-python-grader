@@ -6,6 +6,8 @@ import numpy
 
 # local repo modules
 import omr_utils.template_loader
+import omr_utils.template_matcher
+import omr_utils.timing_mark_anchors
 
 
 #============================================
@@ -28,6 +30,51 @@ def _default_bounds(cx: int, cy: int, geom: dict) -> tuple:
 	left_x = int(cx - geom["half_width"])
 	right_x = int(cx + geom["half_width"])
 	return (top_y, bot_y, left_x, right_x)
+
+
+#============================================
+def _apply_anchor_transform(px: int, py: int, transform: dict,
+	width: int, height: int) -> tuple:
+	"""Apply anchor-derived x/y scale+offset to a pixel coordinate."""
+	tx = int(round(px * transform["x_scale"] + transform["x_offset"]))
+	ty = int(round(py * transform["y_scale"] + transform["y_offset"]))
+	tx = max(0, min(width - 1, tx))
+	ty = max(0, min(height - 1, ty))
+	return (tx, ty)
+
+
+#============================================
+def _sanitize_anchor_transform(transform: dict) -> dict:
+	"""Allow only high-confidence, bounded anchor corrections."""
+	safe = {
+		"x_scale": 1.0,
+		"x_offset": 0.0,
+		"y_scale": 1.0,
+		"y_offset": 0.0,
+		"top_confidence": transform.get("top_confidence", 0.0),
+		"left_confidence": transform.get("left_confidence", 0.0),
+	}
+	left_conf = float(transform.get("left_confidence", 0.0))
+	top_conf = float(transform.get("top_confidence", 0.0))
+	y_scale = float(transform.get("y_scale", 1.0))
+	y_offset = float(transform.get("y_offset", 0.0))
+	x_scale = float(transform.get("x_scale", 1.0))
+	x_offset = float(transform.get("x_offset", 0.0))
+	# y-axis uses left timing marks. Apply a blended correction so we
+	# benefit from anchor guidance without letting noisy detections
+	# oversteer lower rows.
+	if left_conf >= 0.75:
+		blend = 0.40
+		blended_scale = 1.0 + (y_scale - 1.0) * blend
+		blended_offset = y_offset * blend
+		safe["y_scale"] = max(0.97, min(1.03, blended_scale))
+		safe["y_offset"] = max(-20.0, min(20.0, blended_offset))
+	# x-axis is only applied when top-anchor confidence is high and the
+	# inferred correction is already near identity.
+	if top_conf >= 0.75 and 0.97 <= x_scale <= 1.03 and abs(x_offset) <= 20.0:
+		safe["x_scale"] = x_scale
+		safe["x_offset"] = x_offset
+	return safe
 
 
 #============================================
@@ -59,7 +106,8 @@ def _refine_bubble_edges_y(gray: numpy.ndarray, cx: int, cy: int,
 	hh = geom["half_height"]
 	hw = geom["half_width"]
 	pad = geom["refine_pad_v"]
-	max_shift = geom["refine_max_shift"]
+	# y refinement needs a wider window than x on phone photos
+	max_shift = min(float(geom["refine_max_shift"]), 8.0)
 	# default edge positions via centralized float-to-int helper
 	default_top, default_bot, _, _ = _default_bounds(cx, cy, geom)
 	# cap search extent so ROI does not overlap adjacent questions
@@ -145,7 +193,9 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 	h, w = gray.shape
 	hw = geom["half_width"]
 	hpad = geom["refine_pad_h"]
-	max_shift = geom["refine_max_shift"]
+	# second-pass x refinement is intentionally conservative to avoid
+	# stable but wrong row-wide horizontal drift.
+	max_shift = min(float(geom["refine_max_shift"]), 6.0)
 	# default edge positions via centralized float-to-int helper
 	_, _, default_left, default_right = _default_bounds(cx, cy, geom)
 	# horizontal ROI: bubble width + padding on each side
@@ -407,30 +457,31 @@ def _compute_bracket_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 def _compute_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 	top_y: int, bot_y: int, left_x: int, right_x: int,
 	geom: dict) -> float:
-	"""Compute mean brightness of the left and right edge strips.
+	"""Compute mean brightness from dual left/right measurement zones."""
+	left_mean, right_mean = _compute_dual_zone_means(
+		gray, cx, cy, top_y, bot_y, left_x, right_x, geom)
+	if left_mean < 0 or right_mean < 0:
+		return -1.0
+	edge_mean = (left_mean + right_mean) / 2.0
+	return edge_mean
 
-	Measures the rectangular strips on either side of the center
-	exclusion zone (where the printed letter sits). Uses detected
-	edge positions to compute measurement zones from actual bubble
-	edges rather than hardcoded offsets.
 
-	Args:
-		gray: grayscale image (0=black, 255=white)
-		cx: bubble center x in pixels
-		cy: bubble center y in pixels
-		top_y: detected top edge y position
-		bot_y: detected bottom edge y position
-		left_x: detected left edge x position
-		right_x: detected right edge x position
-		geom: pixel geometry dict
+#============================================
+def _compute_dual_zone_means(gray: numpy.ndarray, cx: int, cy: int,
+	top_y: int, bot_y: int, left_x: int, right_x: int,
+	geom: dict) -> tuple:
+	"""Compute left and right measurement-zone means separately.
+
+	This function preserves the dual-zone model explicitly so the
+	decision stage can continue to rely on independent left/right
+	fill measurements after localization.
 
 	Returns:
-		average brightness of left+right edge strips (0-255 scale),
-		or -1.0 if out of bounds
+		tuple of (left_mean, right_mean), or (-1.0, -1.0) if invalid
 	"""
 	h, w = gray.shape
 	if cx < 0 or cy < 0 or cx >= w or cy >= h:
-		return -1.0
+		return (-1.0, -1.0)
 	# int-cast geom values for array slicing
 	ce = int(geom["center_exclusion"])
 	mi_v = int(geom["measurement_inset_v"])
@@ -447,11 +498,10 @@ def _compute_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 	left_strip = gray[y1:y2, lx1:lx2]
 	right_strip = gray[y1:y2, rx1:rx2]
 	if left_strip.size == 0 or right_strip.size == 0:
-		return -1.0
-	# mean of both edge strips (lower = darker = more filled)
-	edge_mean = (float(numpy.mean(left_strip))
-		+ float(numpy.mean(right_strip))) / 2.0
-	return edge_mean
+		return (-1.0, -1.0)
+	left_mean = float(numpy.mean(left_strip))
+	right_mean = float(numpy.mean(right_strip))
+	return (left_mean, right_mean)
 
 
 #============================================
@@ -603,41 +653,36 @@ def _check_row_brightness(edge_means: dict, choices: list,
 
 
 #============================================
-def read_answers(image: numpy.ndarray, template: dict,
-	multi_gap: float = 0.03) -> list:
-	"""Read all 100 answers from a registered scantron image.
+def _select_rect_by_bracket_signal(gray: numpy.ndarray, px: int,
+	refined_cy: int, refined_cx: int, top_y: int, bot_y: int,
+	left_x: int, right_x: int, geom: dict) -> tuple:
+	"""Choose between refined vs template-centered rect by bracket darkness.
 
-	Uses self-referencing scoring: for each question, the lightest
-	(emptiest) choice in the row is used as the baseline. This avoids
-	dependency on local background strips, which can be unreliable
-	for phone photos with uneven lighting or machine-printed marks.
-
-	Blank detection uses adaptive thresholding: the spread (max - min
-	edge mean) across all 100 questions is analyzed to find the natural
-	gap between filled and blank populations.
-
-	Args:
-		image: BGR registered image (perspective-corrected, canonical size)
-		template: loaded template dictionary
-		multi_gap: min spread gap between top two scores for MULTIPLE flag
-
-	Returns:
-		list of dicts with keys: question, answer, scores, flags,
-		positions, edges. answer is a choice letter or empty string
-		if blank, scores is a dict of choice->score, flags is a string,
-		edges maps choice to (top_y, bot_y, left_x, right_x)
+	Empty bubbles should align closely to printed bracket borders.
+	If the template-centered rectangle has materially darker bracket
+	edges than the refined one, prefer template-centered geometry.
 	"""
-	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-	# light blur to reduce noise while preserving fill signal
-	gray = cv2.GaussianBlur(gray, (3, 3), 0)
-	h, w = image.shape[:2]
+	refined_bracket = _compute_bracket_edge_mean(
+		gray, refined_cx, refined_cy, top_y, bot_y, left_x, right_x, geom)
+	def_top, def_bot, def_left, def_right = _default_bounds(px, refined_cy, geom)
+	default_bracket = _compute_bracket_edge_mean(
+		gray, px, refined_cy, def_top, def_bot, def_left, def_right, geom)
+	if default_bracket < 0 or refined_bracket < 0:
+		return (refined_cx, top_y, bot_y, left_x, right_x)
+	# lower mean is darker and generally better aligned to printed edges
+	if default_bracket + 6.0 < refined_bracket:
+		return (px, def_top, def_bot, def_left, def_right)
+	return (refined_cx, top_y, bot_y, left_x, right_x)
+
+
+#============================================
+def _stage_localize_rows(gray: numpy.ndarray, template: dict,
+	geom: dict, transform: dict) -> list:
+	"""Localize bubble rows and refine vertical positions."""
+	h, w = gray.shape
 	answers_config = template["answers"]
 	num_q = answers_config["num_questions"]
 	choices = answers_config["choices"]
-	# get bubble geometry scaled to this image
-	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
-	# first pass: attempt edge detection on all questions
-	# track which questions successfully refined vs fell back to template
 	raw_data = []
 	for q_num in range(1, num_q + 1):
 		q_choices = {}
@@ -645,10 +690,9 @@ def read_answers(image: numpy.ndarray, template: dict,
 			norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
 				template, q_num, choice)
 			px, py = omr_utils.template_loader.to_pixels(norm_x, norm_y, w, h)
-			# attempt edge detection; record whether refinement succeeded
+			px, py = _apply_anchor_transform(px, py, transform, w, h)
 			refined_cy, top_y, bot_y = _refine_bubble_edges_y(
 				gray, px, py, geom)
-			# refinement succeeded if cy changed from template
 			y_refined = (refined_cy != py)
 			q_choices[choice] = {
 				"px": px, "py": py,
@@ -656,16 +700,14 @@ def read_answers(image: numpy.ndarray, template: dict,
 				"top_y": top_y, "bot_y": bot_y,
 			}
 		raw_data.append(q_choices)
-	# correct unrefined choices using two strategies:
-	# 1) intra-row: if some choices in the same row refined, use their median shift
-	# 2) neighbor: if NO choices in the row refined, use nearby rows' shifts
+	# two-part y correction for unresolved detections
 	left_range = answers_config["left_column"]["question_range"]
 	right_range = answers_config["right_column"]["question_range"]
 	for q_idx in range(num_q):
 		q_choices = raw_data[q_idx]
-		# collect shifts from refined choices in this row
 		row_shifts = []
 		unrefined = []
+		max_local_shift = min(int(round(float(geom["refine_max_shift"]))), 8)
 		for choice in choices:
 			cd = q_choices[choice]
 			if cd["y_refined"]:
@@ -673,9 +715,7 @@ def read_answers(image: numpy.ndarray, template: dict,
 			else:
 				unrefined.append(choice)
 		if not unrefined:
-			# all choices refined, nothing to correct
 			continue
-		# collect neighbor shifts to supplement sparse intra-row data
 		q_num = q_idx + 1
 		if left_range[0] <= q_num <= left_range[1]:
 			col_start = left_range[0] - 1
@@ -689,37 +729,49 @@ def read_answers(image: numpy.ndarray, template: dict,
 				if neighbor_idx < col_start or neighbor_idx >= col_end:
 					continue
 				n_choices = raw_data[neighbor_idx]
-				for nc in choices:
-					nd = n_choices[nc]
+				for n_choice in choices:
+					nd = n_choices[n_choice]
 					if nd["y_refined"]:
 						neighbor_shifts.append(nd["refined_cy"] - nd["py"])
 			if len(neighbor_shifts) >= 5:
 				break
-		# combine intra-row and neighbor shifts for a robust median
 		all_shifts = row_shifts + neighbor_shifts
 		if not all_shifts:
 			continue
 		median_shift = int(numpy.median(all_shifts))
-		# apply correction to unrefined choices
+		median_shift = max(-max_local_shift, min(max_local_shift, median_shift))
 		for choice in unrefined:
 			cd = q_choices[choice]
 			corrected_cy = cd["py"] + median_shift
 			cd["refined_cy"] = corrected_cy
-			# use _default_bounds for float-safe int conversion
 			top_y, bot_y, _, _ = _default_bounds(cd["px"], corrected_cy, geom)
 			cd["top_y"] = top_y
 			cd["bot_y"] = bot_y
-	# row linearity check: fix outlier y-centers using line fit
+	# row-linearity pass to fix y outliers
 	for q_idx in range(num_q):
 		q_choices = raw_data[q_idx]
 		outliers = _check_row_linearity(q_choices, choices)
 		for choice, predicted_cy in outliers:
 			cd = q_choices[choice]
+			max_local_shift = min(int(round(float(geom["refine_max_shift"]))), 8)
+			dy = predicted_cy - cd["py"]
+			if dy > max_local_shift:
+				predicted_cy = cd["py"] + max_local_shift
+			elif dy < -max_local_shift:
+				predicted_cy = cd["py"] - max_local_shift
 			cd["refined_cy"] = predicted_cy
 			top_y, bot_y, _, _ = _default_bounds(cd["px"], predicted_cy, geom)
 			cd["top_y"] = top_y
 			cd["bot_y"] = bot_y
-	# second pass: refine x and compute edge means using corrected positions
+	return raw_data
+
+
+#============================================
+def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
+	template: dict, geom: dict, transform: dict = None) -> tuple:
+	"""Refine horizontal edges and compute per-choice measurements."""
+	num_q = template["answers"]["num_questions"]
+	choices = template["answers"]["choices"]
 	all_edge_means = []
 	all_positions = []
 	all_edges = []
@@ -734,16 +786,18 @@ def read_answers(image: numpy.ndarray, template: dict,
 			refined_cy = cd["refined_cy"]
 			top_y = cd["top_y"]
 			bot_y = cd["bot_y"]
-			# refine x per choice using y edges for precise ROI
 			refined_cx, left_x, right_x = _refine_bubble_edges_x(
 				gray, px, refined_cy, top_y, bot_y, geom)
-			# validate area and aspect ratio of the combined rectangle;
-			# resets to template defaults if detection is badly shaped
+			q_choices[choice]["refined_cx"] = refined_cx
 			top_y, bot_y, left_x, right_x, refined_cx = (
 				_validate_bubble_rect(
 					top_y, bot_y, left_x, right_x,
 					px, refined_cy, geom))
-			# compute edge mean using validated edge positions
+			refined_cx, top_y, bot_y, left_x, right_x = (
+				_select_rect_by_bracket_signal(
+					gray, px, refined_cy, refined_cx,
+					top_y, bot_y, left_x, right_x, geom))
+			q_choices[choice]["refined_cx"] = refined_cx
 			edge_means[choice] = _compute_edge_mean(
 				gray, refined_cx, refined_cy,
 				top_y, bot_y, left_x, right_x, geom)
@@ -752,65 +806,87 @@ def read_answers(image: numpy.ndarray, template: dict,
 		all_edge_means.append(edge_means)
 		all_positions.append(positions)
 		all_edges.append(edges)
-	# brightness sanity check: detect rows where measurement landed on white gap
-	# if all 5 choices are white, fall back to template y and re-measure
+	# column-lock correction is only safe when top-anchor confidence is
+	# strong; otherwise perspective residuals on phone photos can make
+	# per-column x medians misleading.
+	top_conf = 0.0
+	if transform is not None:
+		top_conf = float(transform.get("top_confidence", 0.0))
+	if top_conf >= 0.75:
+		left_range = template["answers"]["left_column"]["question_range"]
+		right_range = template["answers"]["right_column"]["question_range"]
+		flagged = {}
+		flagged.update(_check_column_alignment(
+			raw_data, choices, left_range[0] - 1, left_range[1], max_x_deviation=3))
+		flagged.update(_check_column_alignment(
+			raw_data, choices, right_range[0] - 1, right_range[1], max_x_deviation=3))
+		for (q_idx, choice), median_x in flagged.items():
+			cd = raw_data[q_idx][choice]
+			refined_cy = cd["refined_cy"]
+			top_y, bot_y, left_x, right_x = _default_bounds(
+				median_x, refined_cy, geom)
+			edge_mean = _compute_edge_mean(
+				gray, median_x, refined_cy,
+				top_y, bot_y, left_x, right_x, geom)
+			if edge_mean < 0:
+				continue
+			all_edge_means[q_idx][choice] = edge_mean
+			all_positions[q_idx][choice] = (median_x, refined_cy)
+			all_edges[q_idx][choice] = (top_y, bot_y, left_x, right_x)
+			cd["refined_cx"] = median_x
+	# brightness sanity pass: if a row is all-white, fall back to template y
 	for q_idx in range(num_q):
 		if not _check_row_brightness(all_edge_means[q_idx], choices):
 			continue
-		# this row is all-white: re-measure using template y positions
 		q_choices = raw_data[q_idx]
 		for choice in choices:
 			cd = q_choices[choice]
 			px = cd["px"]
 			py = cd["py"]
-			# reset to template y and recompute bounds
 			top_y, bot_y, _, _ = _default_bounds(px, py, geom)
-			# re-run x refinement with template y
 			refined_cx, left_x, right_x = _refine_bubble_edges_x(
 				gray, px, py, top_y, bot_y, geom)
 			top_y, bot_y, left_x, right_x, refined_cx = (
 				_validate_bubble_rect(
 					top_y, bot_y, left_x, right_x,
 					px, py, geom))
-			# re-measure edge mean
 			all_edge_means[q_idx][choice] = _compute_edge_mean(
 				gray, refined_cx, py,
 				top_y, bot_y, left_x, right_x, geom)
 			all_positions[q_idx][choice] = (refined_cx, py)
 			all_edges[q_idx][choice] = (top_y, bot_y, left_x, right_x)
-	# compute per-question spread for adaptive blank detection
+	return (all_edge_means, all_positions, all_edges)
+
+
+#============================================
+def _stage_decide_answers(all_edge_means: list, all_positions: list,
+	all_edges: list, choices: list, multi_gap: float) -> list:
+	"""Convert measurements into answer labels, scores, and flags."""
 	spreads = []
 	for q_idx, edge_means in enumerate(all_edge_means):
 		vals = list(edge_means.values())
 		spread = max(vals) - min(vals)
 		spreads.append((q_idx + 1, spread))
-	# find threshold that separates filled from blank questions
 	blank_threshold = _find_adaptive_threshold(spreads)
-	# second pass: build results using self-referencing scores
 	results = []
 	for q_idx, edge_means in enumerate(all_edge_means):
 		q_num = q_idx + 1
 		vals = list(edge_means.values())
 		max_edge = max(vals)
 		spread = max_edge - min(vals)
-		# self-referencing score: how much darker than lightest choice
 		scores = {}
 		for choice in choices:
 			scores[choice] = (max_edge - edge_means[choice]) / 255.0
-		# sort choices by score descending
 		ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
 		best_choice = ranked[0][0]
 		best_score = ranked[0][1]
 		second_score = ranked[1][1]
-		# gap between best and second best (in pixel units for multi check)
 		gap_from_second = best_score - second_score
 		flags = ""
 		if spread < blank_threshold:
-			# no bubble stands out enough: blank question
 			answer = ""
 			flags = "BLANK"
 		elif gap_from_second < multi_gap:
-			# two bubbles have similar high scores: likely multiple marks
 			answer = best_choice
 			other = ranked[1][0]
 			flags = f"MULTIPLE({other})"
@@ -829,129 +905,98 @@ def read_answers(image: numpy.ndarray, template: dict,
 
 
 #============================================
-def draw_answer_debug(image: numpy.ndarray, template: dict,
-	results: list) -> numpy.ndarray:
-	"""Draw color-coded rectangular bubble overlay on a registered image.
+def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
+	template: dict, geom: dict, bubble_templates: dict) -> None:
+	"""Optional template-matching refinement pass on localized rows.
 
-	Uses semi-transparent filled rectangles so every detection zone is
-	visible even when zones share edges. Uses detected edge positions
-	from read_answers results for accurate overlay alignment.
-
-	- Teal filled strips = measurement zones (left and right of center)
-	- Orange outline = center exclusion zone (printed letter area)
-	- Status color outline = outer bubble border (green/red/yellow/gray)
-
-	Alpha blending (~0.3) keeps the underlying scantron image visible.
+	Uses NCC to refine bubble x-positions by matching pixel templates
+	of each letter against the image. Only updates positions where the
+	NCC confidence is high and the shift is small (conservative approach).
+	Does not update y-positions since Sobel-y refinement is more reliable.
+	Modifies raw_data in place.
 
 	Args:
-		image: BGR registered image
+		gray: grayscale image
+		raw_data: list of per-question choice dicts from _stage_localize_rows
 		template: loaded template dictionary
-		results: list of answer dicts from read_answers
+		geom: pixel geometry dict
+		bubble_templates: dict mapping letter to 5X oversize template array
+	"""
+	choices = template["answers"]["choices"]
+	# conservative: only accept x shifts within 4px
+	max_x_shift = 4
+	# require high confidence for NCC-driven position updates
+	high_confidence = 0.45
+	for q_choices in raw_data:
+		# build position dict for this row
+		row_positions = {}
+		for choice in choices:
+			cd = q_choices[choice]
+			row_positions[choice] = (cd["px"], cd["refined_cy"])
+		# run NCC refinement
+		refined = omr_utils.template_matcher.refine_row_by_template(
+			gray, bubble_templates, row_positions, geom, choices)
+		# update x-positions only when confidence is high and shift is small
+		for choice in choices:
+			if choice not in refined:
+				continue
+			rcx, rcy, conf = refined[choice]
+			if conf < high_confidence:
+				continue
+			cd = q_choices[choice]
+			dx = abs(rcx - cd["px"])
+			# only accept small x corrections (avoid large shifts on
+			# phone photos where NCC may match noise)
+			if dx <= max_x_shift:
+				cd["px"] = rcx
+
+
+#============================================
+def read_answers(image: numpy.ndarray, template: dict,
+	multi_gap: float = 0.03, bubble_templates: dict = None) -> list:
+	"""Read all 100 answers from a registered scantron image.
+
+	Uses self-referencing scoring: for each question, the lightest
+	(emptiest) choice in the row is used as the baseline. This avoids
+	dependency on local background strips, which can be unreliable
+	for phone photos with uneven lighting or machine-printed marks.
+
+	Blank detection uses adaptive thresholding: the spread (max - min
+	edge mean) across all 100 questions is analyzed to find the natural
+	gap between filled and blank populations.
+
+	Args:
+		image: BGR registered image (perspective-corrected, canonical size)
+		template: loaded template dictionary
+		multi_gap: min spread gap between top two scores for MULTIPLE flag
+		bubble_templates: optional dict of pixel templates for NCC refinement;
+			if None, attempts to load from config/bubble_templates/
 
 	Returns:
-		annotated copy of the image
+		list of dicts with keys: question, answer, scores, flags,
+		positions, edges. answer is a choice letter or empty string
+		if blank, scores is a dict of choice->score, flags is a string,
+		edges maps choice to (top_y, bot_y, left_x, right_x)
 	"""
-	debug = image.copy()
-	# overlay layer for alpha-blended filled regions
-	overlay = debug.copy()
-	h, w = debug.shape[:2]
+	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+	# light blur to reduce noise while preserving fill signal
+	gray = cv2.GaussianBlur(gray, (3, 3), 0)
+	h, w = image.shape[:2]
 	choices = template["answers"]["choices"]
-	# get geometry for fallback and center exclusion
 	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
-	# int-cast geom values for cv2.rectangle drawing
-	ce = int(geom["center_exclusion"])
-	mi_v = int(geom["measurement_inset_v"])
-	mi_h = int(geom["measurement_inset_h"])
-	# define zone colors (BGR)
-	teal = (200, 128, 0)
-	orange = (0, 165, 255)
-	alpha = 0.3
-	for entry in results:
-		q_num = entry["question"]
-		positions = entry.get("positions", {})
-		edges = entry.get("edges", {})
-		for choice in choices:
-			# use refined positions from read_answers if available
-			if choice in positions:
-				px, py = positions[choice]
-			else:
-				# fallback: recompute from template
-				norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
-					template, q_num, choice)
-				px, py = omr_utils.template_loader.to_pixels(
-					norm_x, norm_y, w, h)
-			# get detected edges for this bubble
-			if choice in edges:
-				top_y, bot_y, left_x, right_x = edges[choice]
-			else:
-				# fallback to geometry-based defaults
-				top_y, bot_y, left_x, right_x = _default_bounds(px, py, geom)
-			# -- layer 1: teal filled measurement strips (alpha blended) --
-			# matches _compute_edge_mean: inset from detected edges
-			# left measurement strip
-			cv2.rectangle(overlay,
-				(left_x + mi_h, top_y + mi_v),
-				(px - ce, bot_y - mi_v),
-				teal, -1)
-			# right measurement strip
-			cv2.rectangle(overlay,
-				(px + ce, top_y + mi_v),
-				(right_x - mi_h, bot_y - mi_v),
-				teal, -1)
-	# blend the filled overlay onto the debug image
-	cv2.addWeighted(overlay, alpha, debug, 1.0 - alpha, 0, debug)
-	# draw outlines on top of the blended image (no alpha needed)
-	for entry in results:
-		q_num = entry["question"]
-		answer = entry["answer"]
-		flags = entry["flags"]
-		scores = entry["scores"]
-		positions = entry.get("positions", {})
-		edges = entry.get("edges", {})
-		for choice in choices:
-			if choice in positions:
-				px, py = positions[choice]
-			else:
-				norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
-					template, q_num, choice)
-				px, py = omr_utils.template_loader.to_pixels(
-					norm_x, norm_y, w, h)
-			# get detected edges for this bubble
-			if choice in edges:
-				top_y, bot_y, left_x, right_x = edges[choice]
-			else:
-				top_y, bot_y, left_x, right_x = _default_bounds(px, py, geom)
-			# -- layer 3: orange center exclusion outline --
-			cv2.rectangle(debug,
-				(px - ce, top_y),
-				(px + ce, bot_y),
-				orange, 1)
-			# -- layer 4: status-colored outer bubble outline --
-			if choice == answer and "MULTIPLE" not in flags:
-				# selected answer: green
-				status_color = (0, 200, 0)
-				thickness = 2
-			elif choice == answer and "MULTIPLE" in flags:
-				# selected but multiple: yellow
-				status_color = (0, 255, 255)
-				thickness = 2
-			elif flags == "BLANK":
-				# all blank: gray
-				status_color = (128, 128, 128)
-				thickness = 1
-			else:
-				# not selected: red
-				status_color = (0, 0, 200)
-				thickness = 1
-			cv2.rectangle(debug,
-				(left_x, top_y),
-				(right_x, bot_y),
-				status_color, thickness)
-			# draw score text for high scores
-			if scores[choice] > 0.10:
-				score_text = f"{scores[choice]:.2f}"
-				cv2.putText(debug, score_text,
-					(px - 12, top_y - 2),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.25,
-					status_color, 1)
-	return debug
+	raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
+		gray, template)
+	transform = _sanitize_anchor_transform(raw_transform)
+	raw_data = _stage_localize_rows(gray, template, geom, transform)
+	# optional NCC template matching refinement
+	if bubble_templates is None:
+		bubble_templates = omr_utils.template_matcher.try_load_bubble_templates()
+	if bubble_templates:
+		_stage_template_refine(gray, raw_data, template, geom, bubble_templates)
+	all_edge_means, all_positions, all_edges = _stage_measure_rows(
+		gray, raw_data, template, geom)
+	results = _stage_decide_answers(
+		all_edge_means, all_positions, all_edges, choices, multi_gap)
+	return results
+
+

@@ -13,6 +13,7 @@ import cv2
 import omr_utils.template_loader
 import omr_utils.image_registration
 import omr_utils.bubble_reader
+import omr_utils.debug_drawing
 import omr_utils.student_id_reader
 import omr_utils.csv_writer
 import omr_utils.xlsx_writer
@@ -128,7 +129,7 @@ def process_single_image(image_path: str, template: dict,
 	omr_utils.csv_writer.write_answers_csv(csv_path, student_id, results)
 	# debug overlay
 	if debug:
-		debug_img = omr_utils.bubble_reader.draw_answer_debug(
+		debug_img = omr_utils.debug_drawing.draw_answer_debug(
 			registered, template, results)
 		debug_path = os.path.join(output_dir, f"{base_name}_debug.png")
 		cv2.imwrite(debug_path, debug_img)

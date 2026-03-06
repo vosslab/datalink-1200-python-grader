@@ -49,6 +49,9 @@ class TestLoadTemplate:
 		assert answers["num_questions"] == 100
 		assert answers["left_column"]["question_range"] == [1, 50]
 		assert answers["right_column"]["question_range"] == [51, 100]
+		assert template["template_version"] == 3
+		assert "bubble_shape" in answers
+		assert "bubble_geometry" not in answers
 
 	def test_student_id_config(self) -> None:
 		"""Template student_id section is correctly structured."""
@@ -56,6 +59,66 @@ class TestLoadTemplate:
 		sid = template["student_id"]
 		assert sid["num_digits"] == 9
 		assert sid["grid"]["digit_values"] == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+#============================================
+class TestTemplateMigration:
+	"""Tests for v1-to-v2 template migration helpers."""
+
+	def test_migrate_v1_geometry_to_v2_shape(self) -> None:
+		"""Legacy bubble_geometry fields migrate to bubble_shape contract."""
+		template_v1 = {
+			"form": {"name": "x", "orientation": "portrait"},
+			"canonical": {"width_px": 1700, "height_px": 2200},
+			"student_id": {
+				"num_digits": 9,
+				"grid": {
+					"first_digit_x": 0.1,
+					"digit_spacing_x": 0.05,
+					"digit_values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+					"first_value_y": 0.1,
+					"value_spacing_y": 0.01,
+				},
+				"bubble_radius": 0.006,
+			},
+			"answers": {
+				"num_questions": 100,
+				"choices": ["A", "B", "C", "D", "E"],
+				"bubble_radius": 0.006,
+				"bubble_geometry": {
+					"half_width": 0.01765,
+					"half_height": 0.0025,
+				},
+				"left_column": {
+					"question_range": [1, 50],
+					"first_question_y": 0.2,
+					"question_spacing_y": 0.014,
+					"choice_x": {"A": 0.1, "B": 0.15, "C": 0.2, "D": 0.25, "E": 0.3},
+				},
+				"right_column": {
+					"question_range": [51, 100],
+					"first_question_y": 0.2,
+					"question_spacing_y": 0.014,
+					"choice_x": {"A": 0.4, "B": 0.45, "C": 0.5, "D": 0.55, "E": 0.6},
+				},
+			},
+		}
+		migrated = omr_utils.template_loader.migrate_template_to_v2(template_v1)
+		assert migrated["template_version"] == 2
+		assert "bubble_shape" in migrated["answers"]
+		assert "bubble_geometry" not in migrated["answers"]
+		shape = migrated["answers"]["bubble_shape"]
+		assert shape["aspect_ratio"] > 5.0
+		assert shape["target_area_px_at_canonical"] > 500.0
+
+	def test_geometry_derived_from_shape_matches_canonical(self) -> None:
+		"""Derived canonical geometry remains close to known working values."""
+		template = omr_utils.template_loader.load_template(TEMPLATE_PATH)
+		geom = omr_utils.template_loader.get_bubble_geometry_px(
+			template, 1700, 2200)
+		assert 29.0 <= geom["half_width"] <= 31.0
+		assert 5.0 <= geom["half_height"] <= 6.0
+		assert 10.0 <= geom["center_exclusion"] <= 12.5
 
 
 #============================================
@@ -273,3 +336,129 @@ class TestGetAllCoords:
 		assert "value" in first
 		assert "norm_x" in first
 		assert "norm_y" in first
+
+
+#============================================
+class TestV3Migration:
+	"""Tests for v3 template migration with timing mark indices."""
+
+	def test_v3_yaml_loads_with_coordinates(self) -> None:
+		"""V3 YAML (mark indices only) gets coordinate fields at load time."""
+		template = omr_utils.template_loader.load_template(TEMPLATE_PATH)
+		left = template["answers"]["left_column"]
+		# v3 mark index fields present
+		assert "first_row_mark_index" in left
+		assert "row_spacing_marks" in left
+		assert "choice_mark_indices" in left
+		# v2 coordinate fields computed from mark indices
+		assert "first_question_y" in left
+		assert "question_spacing_y" in left
+		assert "choice_x" in left
+
+	def test_v3_student_id_has_both_formats(self) -> None:
+		"""V3 student ID grid has both mark indices and coordinates."""
+		template = omr_utils.template_loader.load_template(TEMPLATE_PATH)
+		grid = template["student_id"]["grid"]
+		# v3 mark index fields
+		assert "first_digit_mark_index" in grid
+		assert "digit_spacing_marks" in grid
+		assert "first_value_mark_index" in grid
+		assert "value_spacing_marks" in grid
+		# v2 coordinate fields
+		assert "first_digit_x" in grid
+		assert "digit_spacing_x" in grid
+		assert "first_value_y" in grid
+		assert "value_spacing_y" in grid
+
+	def test_v2_to_v3_roundtrip_answer_coords(self) -> None:
+		"""V2 coordinates survive v3 migration with sub-pixel accuracy."""
+		# original v2 values
+		v2_left_first_y = 0.2164
+		v2_left_spacing = 0.01400
+		v2_left_choice_a = 0.1212
+		# load v3 template (which was migrated from v2 values)
+		template = omr_utils.template_loader.load_template(TEMPLATE_PATH)
+		left = template["answers"]["left_column"]
+		# computed coordinates should match v2 originals closely
+		assert abs(left["first_question_y"] - v2_left_first_y) < 0.0001
+		assert abs(left["question_spacing_y"] - v2_left_spacing) < 0.0001
+		assert abs(left["choice_x"]["A"] - v2_left_choice_a) < 0.0001
+
+	def test_v2_to_v3_roundtrip_student_id(self) -> None:
+		"""V2 student ID coordinates survive v3 migration."""
+		v2_first_digit_x = 0.1218
+		v2_digit_spacing = 0.0499
+		v2_first_value_y = 0.0745
+		v2_value_spacing = 0.0128
+		template = omr_utils.template_loader.load_template(TEMPLATE_PATH)
+		grid = template["student_id"]["grid"]
+		assert abs(grid["first_digit_x"] - v2_first_digit_x) < 0.0001
+		assert abs(grid["digit_spacing_x"] - v2_digit_spacing) < 0.0001
+		assert abs(grid["first_value_y"] - v2_first_value_y) < 0.0001
+		assert abs(grid["value_spacing_y"] - v2_value_spacing) < 0.0001
+
+	def test_v2_yaml_backward_compat(self) -> None:
+		"""A v2-style template dict migrates to v3 with mark indices."""
+		template_v2 = {
+			"form": {"name": "test", "orientation": "portrait"},
+			"canonical": {"width_px": 1700, "height_px": 2200},
+			"template_version": 2,
+			"timing_marks": {
+				"top_edge": {
+					"y": 0.012, "start_x": 0.04, "end_x": 0.96,
+					"expected_count": 53,
+				},
+				"left_edge": {
+					"x": 0.018, "start_y": 0.067, "end_y": 0.91,
+					"expected_count": 60,
+				},
+			},
+			"student_id": {
+				"num_digits": 9,
+				"grid": {
+					"first_digit_x": 0.1218,
+					"digit_spacing_x": 0.0499,
+					"digit_values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+					"first_value_y": 0.0745,
+					"value_spacing_y": 0.0128,
+				},
+				"bubble_radius": 0.006,
+			},
+			"answers": {
+				"num_questions": 100,
+				"choices": ["A", "B", "C", "D", "E"],
+				"bubble_radius": 0.006,
+				"bubble_shape": {
+					"aspect_ratio": 5.454545,
+					"target_area_px_at_canonical": 660.0,
+				},
+				"left_column": {
+					"question_range": [1, 50],
+					"first_question_y": 0.2164,
+					"question_spacing_y": 0.014,
+					"choice_x": {
+						"A": 0.12, "B": 0.17, "C": 0.22,
+						"D": 0.27, "E": 0.32,
+					},
+				},
+				"right_column": {
+					"question_range": [51, 100],
+					"first_question_y": 0.2164,
+					"question_spacing_y": 0.014,
+					"choice_x": {
+						"A": 0.47, "B": 0.52, "C": 0.57,
+						"D": 0.62, "E": 0.67,
+					},
+				},
+			},
+		}
+		migrated = omr_utils.template_loader.migrate_template_to_v3(template_v2)
+		assert migrated["template_version"] == 3
+		left = migrated["answers"]["left_column"]
+		# mark indices should be computed
+		assert "first_row_mark_index" in left
+		assert "row_spacing_marks" in left
+		assert "choice_mark_indices" in left
+		# original coordinates preserved
+		assert left["first_question_y"] == 0.2164
+		assert left["question_spacing_y"] == 0.014

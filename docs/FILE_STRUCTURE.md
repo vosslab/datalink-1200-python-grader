@@ -4,12 +4,14 @@
 
 ```text
 datalink-1200-python-grader/
-+- register_scan.py          # CLI: raw photo -> registered image
-+- extract_answers.py        # CLI: registered image -> answers CSV
-+- grade_answers.py          # CLI: student CSV + key CSV -> graded CSV
-+- run_pipeline.py           # CLI: batch register + extract + grade
-+- omr_utils/                # shared OMR library package
-+- config/                   # form geometry templates (YAML)
++- register_scan.py              # CLI: raw photo -> registered image
++- extract_answers.py            # CLI: registered image -> answers CSV
++- grade_answers.py              # CLI: student CSV + key CSV -> graded CSV
++- run_pipeline.py               # CLI: batch register + extract + grade
++- extract_bubble_templates.py   # CLI: extract pixel templates from scans
++- migrate_template_to_v2.py     # CLI: migrate legacy template YAML to v2
++- omr_utils/                    # shared OMR library package
++- config/                       # form geometry templates and pixel templates
 +- tests/                    # pytest test suite
 +- docs/                     # project documentation
 +- artifacts/                # reference images and research notes
@@ -35,9 +37,13 @@ datalink-1200-python-grader/
 | File | Purpose |
 | --- | --- |
 | [omr_utils/__init__.py](omr_utils/__init__.py) | Empty package marker (docstring only) |
-| [omr_utils/template_loader.py](omr_utils/template_loader.py) | Load YAML template, compute bubble coordinates |
+| [omr_utils/template_loader.py](omr_utils/template_loader.py) | Load YAML template (v1/v2/v3), compute bubble coordinates |
+| [omr_utils/timing_mark_anchors.py](omr_utils/timing_mark_anchors.py) | Timing-mark detection, anchor transform, mark index conversion |
 | [omr_utils/image_registration.py](omr_utils/image_registration.py) | Page detection, perspective warp, orientation fix |
 | [omr_utils/bubble_reader.py](omr_utils/bubble_reader.py) | Bubble fill scoring and answer extraction |
+| [omr_utils/debug_drawing.py](omr_utils/debug_drawing.py) | Debug overlay drawing for answer bubbles |
+| [omr_utils/bubble_template_extractor.py](omr_utils/bubble_template_extractor.py) | Extract and average 5X pixel templates for bubble letters A-E |
+| [omr_utils/template_matcher.py](omr_utils/template_matcher.py) | Local NCC-based bubble refinement using pixel templates |
 | [omr_utils/student_id_reader.py](omr_utils/student_id_reader.py) | Student ID grid reading |
 | [omr_utils/csv_writer.py](omr_utils/csv_writer.py) | CSV output and input for answers |
 
@@ -45,7 +51,8 @@ datalink-1200-python-grader/
 
 | File | Purpose |
 | --- | --- |
-| [config/dl1200_template.yaml](config/dl1200_template.yaml) | Apperson DataLink 1200 form geometry (normalized coordinates) |
+| [config/dl1200_template.yaml](config/dl1200_template.yaml) | Apperson DataLink 1200 form geometry (v3: timing mark indices) |
+| `config/bubble_templates/` | Pixel templates: A.png through E.png (300x55 grayscale) |
 
 ### [tests/](tests/) -- test suite
 
@@ -56,6 +63,10 @@ datalink-1200-python-grader/
 | [tests/test_bubble_reader.py](tests/test_bubble_reader.py) | Bubble scoring and answer extraction |
 | [tests/test_grade_answers.py](tests/test_grade_answers.py) | Grading logic and CSV round-trip |
 | [tests/test_pipeline_smoke.py](tests/test_pipeline_smoke.py) | End-to-end pipeline smoke tests |
+| [tests/test_timing_mark_anchors.py](tests/test_timing_mark_anchors.py) | Timing-mark anchor transform and mark index conversion tests |
+| [tests/test_bubble_template_extractor.py](tests/test_bubble_template_extractor.py) | Pixel template extraction, quality scoring, save/load |
+| [tests/test_template_matcher.py](tests/test_template_matcher.py) | Local NCC matching and row refinement tests |
+| [tests/test_template_refiner.py](tests/test_template_refiner.py) | Template coordinate refinement from empty bubbles |
 | [tests/test_pyflakes_code_lint.py](tests/test_pyflakes_code_lint.py) | Pyflakes lint gate for all Python files |
 | [tests/test_indentation.py](tests/test_indentation.py) | Tab indentation enforcement |
 | [tests/test_ascii_compliance.py](tests/test_ascii_compliance.py) | ASCII character compliance |

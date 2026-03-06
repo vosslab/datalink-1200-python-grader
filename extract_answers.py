@@ -12,6 +12,7 @@ import cv2
 import omr_utils.template_loader
 import omr_utils.image_registration
 import omr_utils.bubble_reader
+import omr_utils.debug_drawing
 import omr_utils.student_id_reader
 import omr_utils.csv_writer
 
@@ -109,7 +110,7 @@ def main() -> None:
 	print(f"  output: {args.output_file}")
 	# debug overlay
 	if args.debug:
-		debug_img = omr_utils.bubble_reader.draw_answer_debug(
+		debug_img = omr_utils.debug_drawing.draw_answer_debug(
 			registered, template, results)
 		debug_path = args.output_file.replace(".csv", "_debug.png")
 		cv2.imwrite(debug_path, debug_img)
