@@ -2,6 +2,69 @@
 
 ## 2026-03-06
 
+### Additions and New Features
+
+- Added top timing footprint detection with Row-2 verification in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py): new `_approx_gcd_spacing()`, `_fit_row1_model()`, `_predict_row2_right_thins()`, `_match_predictions_to_marks()`, `_score_footprint_hypothesis()`, and `_detect_top_footprint()` functions implement the 10-step footprint detection algorithm
+- `_fit_row1_model()` infers base column spacing from any 3 seed blobs using approximate GCD, then predicts column positions across the full strip width
+- `_predict_row2_right_thins()` predicts the two right-side Row-2 thin marks (gap-thin-gap-thin pattern) relative to the matched Row-1 footprint extent, not the full strip width
+- `_score_footprint_hypothesis()` combines 0.65 * Row-1 coverage + 0.35 * Row-2 thin mark support, with gap irregularity penalty and count bonus, capped at 1.0
+- Footprint-based x-axis transform: maps detected marks to their correct template column indices using the fitted spacing model, enabling polyfit across the 53-column grid; achieves `top_confidence=1.000` on all 9 test images (previously 0.000)
+- Enhanced cluster diagnostics: prints median component size (width x height) and area per row cluster for easier visual debugging
+- Added horizontal dashed guide lines in `draw_timing_mark_debug()` for every-fifth question row pair (Q5/Q55 through Q50/Q100), anchored from the bottom (last left mark = Q50) to avoid cumulative offset errors
+- Improved candidate debug overlay colors with 6 distinct cluster colors and row summary labels at left edge
+
+### Behavior or Interface Changes
+
+- Consolidated debug output from 4 images per scan (`_timing_candidates.png`, `_timing_final.png`, `_registered.png`, `_answers.png`) to 2 images: `_scored.png` (bubble status with confidence) and `_debug.png` (all layers combined: timing candidates, final marks, guide lines, and bubble overlays)
+- Added `draw_scored_overlay()` and `draw_combined_debug()` to [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) for the consolidated output
+- Added Row-2 thin mark boxes (columns 10 and 12) to `draw_timing_mark_debug()` debug overlay, labeled "R2" in cyan-blue
+- Reduced top detection strip from 10% to 6% of image height; reduces noise candidates while retaining all footprint rows
+- Made strip region overlays more transparent (alpha 0.07 from 0.15) with separate muted fill and bright outline colors so underlying marks remain visible
+- Darkened horizontal guide line color; labels now show left-column Q# at left edge and right-column Q# at far right edge
+- `_detect_top_primary_row()` now uses footprint detection with Row-2 verification when available (score > 0.20), falling back to cluster-score selection when the footprint fails
+- Footprint detection iterates only clusters with `_score_timing_row() >= 0.40` to avoid wasting time on noise clusters
+- Row-1 score uses observed-coverage metric (matched/observed) instead of prediction-coverage (matched/predicted), preventing false selection of sparse wrong-row clusters
+- Guide line question mapping anchored from bottom (last mark = Q50) instead of top (mark index 10 = Q1) for more stable alignment
+
+### Decisions and Failures
+
+- Added row-pattern timing anchor detection for top strip in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py): new `_extract_components()`, `_cluster_components_into_rows()`, `_score_timing_row()`, `_dedupe_row_components()`, and `_detect_top_primary_row()` functions replace the old fixed-threshold approach
+- `_score_timing_row()` evaluates 7 weighted factors (component count, size consistency, fill consistency, fill magnitude, y-alignment, x-spacing regularity, aspect ratio consistency) to identify the primary timing row without forcing a specific mark count
+- `_extract_components()` uses only relative thresholds (`area < strip_area * 0.0005`) instead of fixed pixel thresholds, making detection DPI-independent
+- Added `_row_projection_bands()` to compute row-wise dark-pixel sums for localizing timing footprint bands; used as a structural cue (small scoring bonus) for row selection, not as the primary detector
+- Debug overlay `draw_timing_candidates_debug()` now shows row cluster membership with different colors per cluster and cluster index labels (R0, R1, etc.)
+- Debug overlay `draw_timing_mark_debug()` uses M1..Mn labels instead of T1..T7 since mark count is no longer forced
+
+### Behavior or Interface Changes
+
+- Changed top strip geometry from `[start_x..end_x, 0..5%h]` to `[0..w, 0..10%h]` (full width, top 10% height) for row-pattern detection; the row scorer now handles filtering instead of pre-cropping
+- Changed left strip geometry from centered `4%` band around `left_edge.x` to `[0..10%w]` (left 10% width, full height)
+- Adjusted `_estimate_axis_transform()` count adequacy threshold to scale with expected_count (`min(25, count*0.8)`) so small mark sets (7 top blocks) can reach full confidence
+
+### Removals and Deprecations
+
+- Removed `_detect_top_timing_blocks()`: replaced by `_detect_top_primary_row()` which uses row-pattern scoring instead of fixed area/fill thresholds and forced count of 7
+- Removed `_find_best_y_cluster()`: replaced by `_cluster_components_into_rows()` which uses median-height-based gap splitting instead of sliding window
+- Removed `_validate_final_blocks()`: replaced by row scoring in `_score_timing_row()`
+- Removed `_dedupe_by_x_center()`: replaced by `_dedupe_row_components()`
+
+### Behavior or Interface Changes
+
+- Changed timing mark detection in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) to use local Otsu thresholding per strip instead of global Otsu on the full image; phone photos with uneven lighting now threshold correctly in each strip region
+- Added morphological cleanup (open + close) before contour detection in `_detect_marks_in_strip()`: open removes small noise specks, close connects broken mark fragments
+- Widened timing mark search strips from 3% to 4% of image dimension for better mark coverage without excess noise
+- Changed `_detect_marks_in_strip()` to accept grayscale strips instead of pre-binarized strips; thresholding now happens locally inside the function
+- Relaxed contour filters: minimum area lowered from 10 to 5 (helps low-res phone photos); left mark aspect ratio relaxed from w/h >= 1.5 to >= 1.2; top mark filter relaxed from h/w <= 3.0 to <= 4.0
+- Replaced confidence metric in `_estimate_axis_transform()`: old metric used raw count ratio (unique/expected) which penalized forms with physical gaps in timing marks; new metric combines count adequacy (25 marks is sufficient) with span coverage (marks must span the expected range), giving a more accurate assessment of transform reliability
+- Relaxed RMSE penalty threshold from 8.0 to 12.0 px: phone photos inherently have more geometric distortion (8.5px RMSE on a 2213px image is only 0.38% error), and the old threshold unfairly penalized otherwise reliable transforms
+
+### Decisions and Failures
+
+- M2 anchor experiment results: tested 3 approaches (A: widen+relax, B: adaptive threshold, C: morph cleanup) on all 4 test images; none passed alone. Approach A had best top coverage but left axis failed due to RMSE penalty. Approach B (adaptive threshold) helped KEY/8B5D but not phone photos. Approach C (morph only) was mixed. Winner: hybrid of A+C (local Otsu + morph cleanup + relaxed filters) combined with revised confidence metric
+- Discovered indices 1, 38, 39 are consistently missing across ALL test images, indicating physical gaps in the DataLink 1200 form timing marks (not detection failures)
+- Top timing mark row does not extend to x=0.96: right ~20% has Apperson branding with no marks. The expected_count=53 overcounts the actual physical marks (~50)
+- Key image top marks harder to detect than student photos due to text ("VERIFY", "RESCORE") creating noise contours in the strip region
+
 ### Fixes and Maintenance
 
 - Disabled y-axis timing mark transform pass-through in `_sanitize_anchor_transform()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): the y-transform from left timing marks (scale=0.992, offset=+10px) conflicted with the affine fit from Sobel-detected edges, causing double-correction that pushed positions off bubbles and produced 13-21 all-white rows on some images; y_scale and y_offset now stay at identity, and the affine fit handles y-positioning alone

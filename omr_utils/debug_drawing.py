@@ -5,6 +5,7 @@ import cv2
 import numpy
 
 # local repo modules
+import omr_utils.bubble_reader
 import omr_utils.template_loader
 import omr_utils.timing_mark_anchors
 
@@ -127,7 +128,7 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 	h, w = debug.shape[:2]
 	choices = template["answers"]["choices"]
 	# get geometry for fallback and center exclusion
-	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
+	geom = omr_utils.bubble_reader.default_geom()
 	shift_data = {}
 	if show_refine_shifts:
 		shift_data = _compute_refinement_shift_data(results, template, w, h)
@@ -243,4 +244,57 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 					(px - 12, top_y - 2),
 					cv2.FONT_HERSHEY_SIMPLEX, 0.25,
 					status_color, 1)
+	return debug
+
+
+#============================================
+def draw_scored_overlay(image: numpy.ndarray, template: dict,
+	results: list) -> numpy.ndarray:
+	"""Draw minimal scoring overlay showing bubble status and confidence.
+
+	Shows filled/unfilled determination with confidence scores.
+	No timing marks, no guide lines, no detection zones.
+
+	Args:
+		image: BGR registered image
+		template: loaded template dictionary
+		results: list of answer dicts from read_answers
+
+	Returns:
+		annotated copy of the image
+	"""
+	# reuse existing answer debug without shift vectors for cleaner output
+	scored = draw_answer_debug(image, template, results,
+		show_refine_shifts=False)
+	return scored
+
+
+#============================================
+def draw_combined_debug(image: numpy.ndarray, template: dict,
+	transform: dict, results: list) -> numpy.ndarray:
+	"""Draw combined debug overlay with all diagnostic layers.
+
+	Layers (bottom to top):
+	1. Timing mark candidates with cluster colors (search strips)
+	2. Final timing marks with guide lines
+	3. Bubble outlines with detection zones and shift vectors
+
+	Args:
+		image: BGR registered image
+		template: loaded template dictionary
+		transform: dict from estimate_anchor_transform
+		results: list of answer dicts from read_answers
+
+	Returns:
+		annotated copy with all debug layers combined
+	"""
+	# start with timing candidates (search strips + cluster bboxes)
+	debug = omr_utils.timing_mark_anchors.draw_timing_candidates_debug(
+		image, transform)
+	# overlay final timing marks and guide lines on top
+	debug = omr_utils.timing_mark_anchors.draw_timing_mark_debug(
+		debug, transform)
+	# overlay answer bubbles with detection zones and shift vectors
+	debug = draw_answer_debug(debug, template, results,
+		show_refine_shifts=True)
 	return debug

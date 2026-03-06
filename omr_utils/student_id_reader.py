@@ -31,7 +31,7 @@ def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
 	# get bubble geometry scaled to this image size
-	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
+	geom = omr_utils.bubble_reader.default_geom()
 	digits = []
 	for d in range(num_digits):
 		best_value = 0
@@ -75,7 +75,7 @@ def read_student_id_detailed(image, template: dict,
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
 	# get bubble geometry scaled to this image size
-	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
+	geom = omr_utils.bubble_reader.default_geom()
 	digit_details = []
 	id_string = ""
 	for d in range(num_digits):

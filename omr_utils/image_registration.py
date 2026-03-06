@@ -309,12 +309,13 @@ def rotate_image_90(image: numpy.ndarray, degrees: int) -> numpy.ndarray:
 
 #============================================
 def register_image(image: numpy.ndarray) -> numpy.ndarray:
-	"""Full registration pipeline: detect page, warp, orient, resize.
+	"""Full registration pipeline: detect page, warp, and orient.
 
 	Args:
 		image: BGR input image (raw photo or scan)
 
 	Returns:
+		registered BGR image (perspective-corrected and oriented)
 	"""
 	# detect page boundary
 	corners = find_page_contour(image)
@@ -326,7 +327,7 @@ def register_image(image: numpy.ndarray) -> numpy.ndarray:
 	rotation = detect_orientation(warped)
 	if rotation != 0:
 		warped = rotate_image_90(warped, rotation)
-		interpolation=cv2.INTER_AREA)
+	registered = warped
 	return registered
 
 

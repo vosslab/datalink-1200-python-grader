@@ -91,7 +91,7 @@ def _refine_bubble_edges_y(gray: numpy.ndarray, cx: int, cy: int,
 		gray: grayscale image (0=black, 255=white)
 		cx: bubble center x in pixels (template estimate)
 		cy: bubble center y in pixels (template estimate)
-		geom: pixel geometry dict from get_bubble_geometry_px()
+		geom: pixel geometry dict from default_geom()
 
 	Returns:
 		tuple of (refined_cy, top_y, bot_y) as integers;
@@ -177,7 +177,7 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 		cy: bubble center y in pixels (already y-refined)
 		top_y: detected top edge y position
 		bot_y: detected bottom edge y position
-		geom: pixel geometry dict from get_bubble_geometry_px()
+		geom: pixel geometry dict from default_geom()
 
 	Returns:
 		tuple of (refined_cx, left_x, right_x) as integers;
@@ -277,7 +277,7 @@ def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
 		return -1.0
 	# use default geometry if none provided
 	if geom is None:
-		geom = _default_geom()
+		geom = default_geom()
 	# compute default edge positions from center
 	top_y, bot_y, left_x, right_x = _default_bounds(cx, cy, geom)
 	# bracket edges provide a dark reference (printed border)
@@ -314,7 +314,7 @@ def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
 
 
 #============================================
-def _default_geom() -> dict:
+def default_geom() -> dict:
 	"""
 	Provides backward-compatible defaults when no template geometry
 	is available (e.g. for score_bubble_fast standalone calls).
@@ -986,7 +986,7 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 	for q_idx in range(num_q):
 		if _check_row_brightness(all_edge_means[q_idx], choices):
 			bad_row_count += 1
-	if bad_row_count > 25:
+	if bad_row_count > 75:
 		left_conf = 0.0
 		top_conf_val = 0.0
 		if transform is not None:
@@ -1127,7 +1127,7 @@ def read_answers(image: numpy.ndarray, template: dict,
 	gray = cv2.GaussianBlur(gray, (3, 3), 0)
 	h, w = image.shape[:2]
 	choices = template["answers"]["choices"]
-	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
+	geom = default_geom()
 	raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
 	print(f"  anchor confidence: left={raw_transform.get('left_confidence', 0):.3f}"

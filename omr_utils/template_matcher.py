@@ -21,7 +21,7 @@ import omr_utils.bubble_template_extractor
 #============================================
 def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,
 	approx_cx: int, approx_cy: int,
-	search_radius: int = DEFAULT_SEARCH_RADIUS) -> tuple:
+	search_radius: int = 8) -> tuple:
 	"""Find exact bubble center using local NCC template matching.
 
 	Extracts a search region around the approximate position, scales
@@ -76,7 +76,7 @@ def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,
 #============================================
 def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 	row_positions: dict, geom: dict, choices: list,
-	search_radius: int = DEFAULT_SEARCH_RADIUS) -> dict:
+	search_radius: int = 8) -> dict:
 	"""Refine all 5 choice positions in a question row using templates.
 
 	For each choice, uses the corresponding letter's pixel template to
@@ -112,7 +112,7 @@ def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 		# run local NCC matching
 		rcx, rcy, conf = match_bubble_local(
 			gray, scaled, cx, cy, search_radius)
-		if conf >= MIN_MATCH_CONFIDENCE:
+		if conf >= 0.30:
 			refined[choice] = (rcx, rcy, conf)
 		else:
 			# keep original position when confidence is low

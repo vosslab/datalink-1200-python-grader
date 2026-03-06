@@ -110,7 +110,46 @@ def process_single_image(image_path: str, template: dict,
 	Returns:
 		dict with keys: csv_path, student_id, num_answered
 	"""
-
+	base_name = os.path.splitext(os.path.basename(image_path))[0]
+	# load and register the raw image
+	raw_image = omr_utils.image_registration.load_image(image_path)
+	registered = omr_utils.image_registration.register_image(raw_image)
+	# compute timing mark transform for anchor refinement and debug
+	transform = None
+	if debug:
+		gray = cv2.cvtColor(registered, cv2.COLOR_BGR2GRAY)
+		gray = cv2.GaussianBlur(gray, (3, 3), 0)
+		transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
+			gray, template)
+	# read student ID
+	student_id = omr_utils.student_id_reader.read_student_id(
+		registered, template)
+	# read answer bubbles
+	answers = omr_utils.bubble_reader.read_answers(registered, template)
+	# count non-blank answers
+	num_answered = sum(1 for a in answers if a["answer"])
+	# write answers CSV
+	csv_path = os.path.join(output_dir, f"{base_name}_answers.csv")
+	omr_utils.csv_writer.write_answers_csv(csv_path, student_id, answers)
+	# save two debug images: scored (bubble status) and debug (everything)
+	if debug:
+		# scored: bubble outlines with filled/not determination and confidence
+		scored_img = omr_utils.debug_drawing.draw_scored_overlay(
+			registered, template, answers)
+		scored_path = os.path.join(output_dir, f"{base_name}_scored.png")
+		cv2.imwrite(scored_path, scored_img)
+		print(f"    scored: {scored_path}")
+		# debug: timing marks + guide lines + bubble overlays combined
+		debug_img = omr_utils.debug_drawing.draw_combined_debug(
+			registered, template, transform, answers)
+		debug_path = os.path.join(output_dir, f"{base_name}_debug.png")
+		cv2.imwrite(debug_path, debug_img)
+		print(f"    debug: {debug_path}")
+	result = {
+		"csv_path": csv_path,
+		"student_id": student_id,
+		"num_answered": num_answered,
+	}
 	return result
 
 

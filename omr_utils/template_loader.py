@@ -8,7 +8,7 @@ import copy
 import yaml
 
 # local repo modules
-import omr_utils.timing_mark_anchor
+import omr_utils.timing_mark_anchors
 
 
 #============================================
@@ -31,6 +31,11 @@ def _validate_answer_columns(answers: dict) -> None:
 def _compute_shape_from_v1_geometry(template: dict) -> dict:
 	"""Compute v2 shape fields from v1 bubble_geometry settings."""
 	answers = template["answers"]
+	# extract aspect ratio from v1 bubble_geometry if present
+	bubble_geom = answers.get("bubble_geometry", {})
+	half_w = float(bubble_geom.get("half_width", 30.0))
+	half_h = float(bubble_geom.get("half_height", 5.5))
+	aspect_ratio = half_w / half_h if half_h > 0 else 5.45
 	shape = {
 		"aspect_ratio": round(aspect_ratio, 6),
 	}
@@ -237,7 +242,6 @@ def _validate_v2_shape(template: dict) -> None:
 	aspect_ratio = float(shape["aspect_ratio"])
 	if aspect_ratio <= 0:
 		raise ValueError("template v2 bubble_shape aspect_ratio must be > 0")
-	if target_area <= 0:
 
 
 #============================================
@@ -372,13 +376,6 @@ def get_all_question_coords(template: dict) -> list:
 			}
 			coords.append(entry)
 	return coords
-
-
-#============================================
-def _derive_geometry_from_shape():
-	"""Derive runtime geometry from v2 shape contract."""
-	aspect_ratio = float(shape["aspect_ratio"])
-	return geom
 
 
 #============================================

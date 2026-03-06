@@ -45,11 +45,15 @@ def test_identity_transform_on_blank_image() -> None:
 
 #============================================
 def test_recovers_left_and_top_axis_transform() -> None:
-	"""Detected timing marks recover scale and offset on both axes."""
-	h = 320
-	w = 420
+	"""Detected timing marks recover scale and offset on both axes.
+
+	Uses a larger synthetic image (1000x800) so top blocks have
+	realistic relative size for row-pattern detection.
+	"""
+	h = 800
+	w = 1000
 	gray = numpy.full((h, w), 255, dtype=numpy.uint8)
-	template = _make_template(left_count=34, top_count=32)
+	template = _make_template(left_count=34, top_count=7)
 	left = template["timing_marks"]["left_edge"]
 	top = template["timing_marks"]["top_edge"]
 	# synthetic residual distortion to recover
@@ -57,27 +61,32 @@ def test_recovers_left_and_top_axis_transform() -> None:
 	y_offset = 5.0
 	x_scale = 0.97
 	x_offset = -4.0
+	# draw left dashes (wider than tall, in left 10% of image)
 	left_x = int(round(left["x"] * w))
-	top_y = int(round(top["y"] * h))
 	exp_left = numpy.linspace(
 		left["start_y"] * h, left["end_y"] * h, left["expected_count"])
-	exp_top = numpy.linspace(
-		top["start_x"] * w, top["end_x"] * w, top["expected_count"])
-	# draw left dashes
 	for exp_y in exp_left:
 		y = int(round(exp_y * y_scale + y_offset))
-		y1 = max(0, y - 1)
-		y2 = min(h, y + 2)
-		x1 = max(0, left_x - 4)
-		x2 = min(w, left_x + 4)
+		y1 = max(0, y - 2)
+		y2 = min(h, y + 3)
+		x1 = max(0, left_x - 8)
+		x2 = min(w, left_x + 8)
 		gray[y1:y2, x1:x2] = 0
-	# draw top boxes
+	# draw 7 large top blocks in top 10% strip
+	# each block ~2% of width, ~30% of strip height
+	strip_h = int(h * 0.10)
+	block_w = int(w * 0.02)
+	block_h = int(strip_h * 0.30)
+	exp_top = numpy.linspace(
+		top["start_x"] * w, top["end_x"] * w, 7)
+	# blocks centered at ~40% of strip height
+	block_cy = int(strip_h * 0.40)
 	for exp_x in exp_top:
 		x = int(round(exp_x * x_scale + x_offset))
-		x1 = max(0, x - 2)
-		x2 = min(w, x + 3)
-		y1 = max(0, top_y - 3)
-		y2 = min(h, top_y + 3)
+		x1 = max(0, x - block_w // 2)
+		x2 = min(w, x + block_w // 2)
+		y1 = max(0, block_cy - block_h // 2)
+		y2 = min(strip_h, block_cy + block_h // 2)
 		gray[y1:y2, x1:x2] = 0
 	result = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
@@ -144,34 +153,41 @@ def test_blank_image_returns_empty_marks() -> None:
 
 #============================================
 def test_mark_positions_returned_with_bboxes() -> None:
-	"""Transform result includes mark positions and valid bounding boxes."""
-	h = 320
-	w = 420
+	"""Transform result includes mark positions and valid bounding boxes.
+
+	Uses larger synthetic image with 7 large blocks in top 10% strip
+	to match row-pattern detection expectations.
+	"""
+	h = 800
+	w = 1000
 	gray = numpy.full((h, w), 255, dtype=numpy.uint8)
-	template = _make_template(left_count=34, top_count=32)
+	template = _make_template(left_count=34, top_count=7)
 	left = template["timing_marks"]["left_edge"]
 	top = template["timing_marks"]["top_edge"]
-	left_x = int(round(left["x"] * w))
-	top_y = int(round(top["y"] * h))
 	# draw left dashes at expected positions
+	left_x = int(round(left["x"] * w))
 	exp_left = numpy.linspace(
 		left["start_y"] * h, left["end_y"] * h, left["expected_count"])
 	for exp_y in exp_left:
 		y = int(round(exp_y))
-		y1 = max(0, y - 1)
-		y2 = min(h, y + 2)
-		x1 = max(0, left_x - 4)
-		x2 = min(w, left_x + 4)
+		y1 = max(0, y - 2)
+		y2 = min(h, y + 3)
+		x1 = max(0, left_x - 8)
+		x2 = min(w, left_x + 8)
 		gray[y1:y2, x1:x2] = 0
-	# draw top boxes at expected positions
+	# draw 7 large top blocks in top 10% strip
+	strip_h = int(h * 0.10)
+	block_w = int(w * 0.02)
+	block_h = int(strip_h * 0.30)
 	exp_top = numpy.linspace(
-		top["start_x"] * w, top["end_x"] * w, top["expected_count"])
+		top["start_x"] * w, top["end_x"] * w, 7)
+	block_cy = int(strip_h * 0.40)
 	for exp_x in exp_top:
 		x = int(round(exp_x))
-		x1 = max(0, x - 2)
-		x2 = min(w, x + 3)
-		y1 = max(0, top_y - 3)
-		y2 = min(h, top_y + 3)
+		x1 = max(0, x - block_w // 2)
+		x2 = min(w, x + block_w // 2)
+		y1 = max(0, block_cy - block_h // 2)
+		y2 = min(strip_h, block_cy + block_h // 2)
 		gray[y1:y2, x1:x2] = 0
 	result = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
@@ -187,9 +203,9 @@ def test_mark_positions_returned_with_bboxes() -> None:
 		assert bh > 0
 		# center must be within image bounds
 		assert 0 <= mark["center_y"] < h
-	# verify top marks returned
+	# verify top marks returned (at least 5 of 7 expected)
 	top_marks = result["top_marks"]
-	assert len(top_marks) >= 20
+	assert len(top_marks) >= 5
 	for mark in top_marks:
 		assert "center_x" in mark
 		assert "bbox" in mark

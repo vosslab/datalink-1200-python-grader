@@ -15,6 +15,7 @@ import numpy
 
 # local repo modules
 import omr_utils.template_loader
+import omr_utils.bubble_reader
 
 
 #============================================
@@ -39,17 +40,23 @@ def extract_bubble_patch(gray: numpy.ndarray, cx: int, cy: int,
 	h, w = gray.shape
 	half_w = int(geom["half_width"])
 	half_h = int(geom["half_height"])
+	# extraction padding: small border around the bubble
+	pad_x = max(2, int(half_w * 0.1))
+	pad_y = max(1, int(half_h * 0.2))
 	# compute extraction region with padding
-	x1 = cx - half_w - EXTRACT_PAD_X
-	x2 = cx + half_w + EXTRACT_PAD_X
-	y1 = cy - half_h - EXTRACT_PAD_Y
-	y2 = cy + half_h + EXTRACT_PAD_Y
+	x1 = cx - half_w - pad_x
+	x2 = cx + half_w + pad_x
+	y1 = cy - half_h - pad_y
+	y2 = cy + half_h + pad_y
 	# bounds check
 	if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
 		return None
 	# extract and resize to 5X oversize
 	patch = gray[y1:y2, x1:x2]
-	resized = cv2.resize(patch, (TEMPLATE_WIDTH, TEMPLATE_HEIGHT),
+	# 5X oversize template dimensions
+	template_w = (half_w * 2 + pad_x * 2) * 5
+	template_h = (half_h * 2 + pad_y * 2) * 5
+	resized = cv2.resize(patch, (template_w, template_h),
 		interpolation=cv2.INTER_CUBIC)
 	return resized
 
@@ -109,7 +116,7 @@ def extract_letter_templates(gray: numpy.ndarray, template: dict,
 	"""
 	h, w = gray.shape
 	choices = template["answers"]["choices"]
-	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
+	geom = omr_utils.bubble_reader.default_geom()
 	# collect patches grouped by letter
 	patches_by_letter = {choice: [] for choice in choices}
 	for entry in results:
@@ -222,8 +229,12 @@ def scale_template_to_bubble(template_img: numpy.ndarray,
 		scaled template array matching the expected bubble dimensions
 	"""
 	# target size includes padding used during extraction
-	target_w = int(geom["half_width"]) * 2 + EXTRACT_PAD_X * 2
-	target_h = int(geom["half_height"]) * 2 + EXTRACT_PAD_Y * 2
+	half_w = int(geom["half_width"])
+	half_h = int(geom["half_height"])
+	pad_x = max(2, int(half_w * 0.1))
+	pad_y = max(1, int(half_h * 0.2))
+	target_w = half_w * 2 + pad_x * 2
+	target_h = half_h * 2 + pad_y * 2
 	# ensure minimum size
 	target_w = max(target_w, 5)
 	target_h = max(target_h, 3)

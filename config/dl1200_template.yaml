@@ -1,0 +1,69 @@
+# DataLink 1200 form geometry template (provisional bootstrap)
+# Exact bubble center geometry is bootstrap-only and must not override anchor-derived placement.
+# Values are normalized coordinates (0.0 to 1.0) relative to registered image.
+# Bubble position fields are provisional - refine from debug overlay.
+template_version: 2
+
+form:
+  name: "Apperson DataLink 1200"
+  model: "28040"
+  orientation: portrait
+
+timing_marks:
+  left_edge:
+    x: 0.018
+    start_y: 0.067
+    end_y: 0.91
+    expected_count: 60
+  top_edge:
+    y: 0.035
+    start_x: 0.04
+    end_x: 0.96
+    expected_count: 53
+
+answers:
+  num_questions: 100
+  choices:
+    - A
+    - B
+    - C
+    - D
+    - E
+  bubble_radius: 0.007
+  bubble_shape:
+    aspect_ratio: 5.4545
+
+  left_column:
+    question_range: [1, 50]
+    # provisional - measured from KEY intensity profiles, refine from overlay
+    # derived from left timing mark 10 position
+    first_question_y: 0.2111
+    question_spacing_y: 0.01418
+    choice_x:
+      A: 0.124
+      B: 0.176
+      C: 0.220
+      D: 0.277
+      E: 0.320
+
+  right_column:
+    question_range: [51, 100]
+    # provisional - measured from KEY intensity profiles, refine from overlay
+    # right column span (0.199) matches left column span (0.196)
+    first_question_y: 0.2111
+    question_spacing_y: 0.01418
+    choice_x:
+      A: 0.472
+      B: 0.519
+      C: 0.568
+      D: 0.618
+      E: 0.671
+
+student_id:
+  num_digits: 9
+  grid:
+    # provisional - refine from overlay
+    first_digit_x: 0.090
+    digit_spacing_x: 0.033
+    first_value_y: 0.080
+    value_spacing_y: 0.013
