@@ -17,11 +17,6 @@ import numpy
 import omr_utils.template_loader
 import omr_utils.bubble_template_extractor
 
-# default search radius in pixels at canonical resolution
-DEFAULT_SEARCH_RADIUS = 15
-# minimum NCC confidence to accept a match
-MIN_MATCH_CONFIDENCE = 0.3
-
 
 #============================================
 def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,

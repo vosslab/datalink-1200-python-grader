@@ -88,6 +88,15 @@ def _detect_marks_in_strip(binary_inv: numpy.ndarray, axis: str) -> list:
 		area = w * h
 		if area < 10:
 			continue
+		# filter by aspect ratio to reject noise from wider search strips
+		if axis == "y":
+			# left dashes are wider than tall
+			if h > 0 and w / h < 1.5:
+				continue
+		else:
+			# top boxes are roughly square or wider than tall
+			if w > 0 and h / w > 3.0:
+				continue
 		if axis == "x":
 			center = float(x + w / 2.0)
 		else:
@@ -112,7 +121,7 @@ def _detect_centers_in_strip(binary_inv: numpy.ndarray, axis: str) -> list:
 def _estimate_axis_transform(observed: list, expected_start: float,
 	expected_end: float, expected_count: int) -> tuple:
 	"""Estimate (scale, offset, confidence) for one axis from timing marks."""
-	min_marks = max(8, expected_count // 4)
+	min_marks = max(4, expected_count // 8)
 	if len(observed) < min_marks:
 		return (1.0, 0.0, 0.0)
 	exp_span = float(expected_end - expected_start)
@@ -128,7 +137,7 @@ def _estimate_axis_transform(observed: list, expected_start: float,
 	approx_idx = numpy.rint((obs_arr - expected_start) / exp_step).astype(int)
 	approx_idx = numpy.clip(approx_idx, 0, expected_count - 1)
 	unique_idx = numpy.unique(approx_idx)
-	if len(unique_idx) < max(4, min_marks // 2):
+	if len(unique_idx) < max(3, min_marks // 2):
 		return (1.0, 0.0, 0.0)
 	exp_pts = []
 	obs_pts = []
@@ -195,7 +204,7 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 		left_x = int(round(left_edge.get("x", 0.018) * w))
 		y1 = int(round(left_edge.get("start_y", 0.067) * h))
 		y2 = int(round(left_edge.get("end_y", 0.91) * h))
-		strip_half_w = max(5, int(round(w * 0.01)))
+		strip_half_w = max(10, int(round(w * 0.03)))
 		x1 = max(0, left_x - strip_half_w)
 		x2 = min(w, left_x + strip_half_w)
 		y1 = max(0, y1)
@@ -229,7 +238,7 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 		top_y = int(round(top_edge.get("y", 0.012) * h))
 		x1 = int(round(top_edge.get("start_x", 0.04) * w))
 		x2 = int(round(top_edge.get("end_x", 0.96) * w))
-		strip_half_h = max(5, int(round(h * 0.01)))
+		strip_half_h = max(10, int(round(h * 0.03)))
 		y1 = max(0, top_y - strip_half_h)
 		y2 = min(h, top_y + strip_half_h)
 		x1 = max(0, x1)

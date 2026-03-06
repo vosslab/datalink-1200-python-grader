@@ -16,18 +16,6 @@ import numpy
 # local repo modules
 import omr_utils.template_loader
 
-# scale factor for stored templates (5X canonical bubble size)
-TEMPLATE_SCALE = 5
-# canonical bubble dimensions (60 wide x 11 tall at 1700x2200)
-CANONICAL_BUBBLE_WIDTH = 60
-CANONICAL_BUBBLE_HEIGHT = 11
-# stored template dimensions at 5X
-TEMPLATE_WIDTH = CANONICAL_BUBBLE_WIDTH * TEMPLATE_SCALE
-TEMPLATE_HEIGHT = CANONICAL_BUBBLE_HEIGHT * TEMPLATE_SCALE
-# padding around bubble for extraction (pixels at canonical resolution)
-EXTRACT_PAD_X = 3
-EXTRACT_PAD_Y = 2
-
 
 #============================================
 def extract_bubble_patch(gray: numpy.ndarray, cx: int, cy: int,
@@ -109,7 +97,6 @@ def extract_letter_templates(gray: numpy.ndarray, template: dict,
 	median stack for each letter to produce clean reference templates.
 
 	Args:
-		gray: grayscale registered image (canonical size)
 		template: loaded template dictionary
 		results: list of answer dicts from read_answers()
 		empty_score_max: maximum fill score to consider a bubble empty

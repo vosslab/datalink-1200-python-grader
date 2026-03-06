@@ -8,28 +8,13 @@ import copy
 import yaml
 
 # local repo modules
-import omr_utils.timing_mark_anchors
-
-
-DEFAULT_CANONICAL_WIDTH = 1700.0
-DEFAULT_CANONICAL_HEIGHT = 2200.0
-DEFAULT_SHAPE_ASPECT_RATIO = 60.0 / 11.0
-DEFAULT_TARGET_AREA_CANONICAL = 60.0 * 11.0
-
-# Derived-geometry ratios from the previous canonical 60x11 bubble box.
-DEFAULT_CENTER_EXCLUSION_RATIO_W = 11.0 / 60.0
-DEFAULT_BRACKET_EDGE_RATIO_H = 2.0 / 11.0
-DEFAULT_MEASURE_INSET_V_RATIO_H = 2.0 / 11.0
-DEFAULT_MEASURE_INSET_H_RATIO_W = 3.0 / 60.0
-DEFAULT_REFINE_SHIFT_RATIO_H = 8.0 / 11.0
-DEFAULT_REFINE_PAD_V_RATIO_H = 8.0 / 11.0
-DEFAULT_REFINE_PAD_H_RATIO_W = 8.0 / 60.0
+import omr_utils.timing_mark_anchor
 
 
 #============================================
 def _validate_required_sections(template: dict) -> None:
 	"""Validate required top-level sections exist."""
-	required_keys = ("form", "canonical", "student_id", "answers")
+	required_keys = ("form", "student_id", "answers")
 	for key in required_keys:
 		if key not in template:
 			raise ValueError(f"template missing required key: {key}")
@@ -46,19 +31,8 @@ def _validate_answer_columns(answers: dict) -> None:
 def _compute_shape_from_v1_geometry(template: dict) -> dict:
 	"""Compute v2 shape fields from v1 bubble_geometry settings."""
 	answers = template["answers"]
-	geom = answers.get("bubble_geometry", {})
-	canonical = template.get("canonical", {})
-	canon_w = float(canonical.get("width_px", DEFAULT_CANONICAL_WIDTH))
-	canon_h = float(canonical.get("height_px", DEFAULT_CANONICAL_HEIGHT))
-	half_width_norm = float(geom.get("half_width", 0.01765))
-	half_height_norm = float(geom.get("half_height", 0.00250))
-	full_w = max(1.0, 2.0 * half_width_norm * canon_w)
-	full_h = max(1.0, 2.0 * half_height_norm * canon_h)
-	aspect_ratio = max(1e-6, full_w / full_h)
-	target_area = max(1.0, full_w * full_h)
 	shape = {
 		"aspect_ratio": round(aspect_ratio, 6),
-		"target_area_px_at_canonical": round(target_area, 3),
 	}
 	return shape
 
@@ -70,7 +44,6 @@ def migrate_template_to_v2(template: dict) -> dict:
 	V2 keeps the same anchor/layout structure but replaces large
 	per-geometry parameter surfaces with a minimal shape contract:
 	- aspect_ratio
-	- target_area_px_at_canonical
 
 	Args:
 		template: raw template dictionary loaded from YAML
@@ -261,14 +234,10 @@ def _validate_v2_shape(template: dict) -> None:
 	"""Validate v2 bubble shape values are present and sane."""
 	answers = template["answers"]
 	shape = answers.get("bubble_shape", {})
-	if "aspect_ratio" not in shape or "target_area_px_at_canonical" not in shape:
-		raise ValueError("template v2 answers.bubble_shape must define aspect_ratio and target_area_px_at_canonical")
 	aspect_ratio = float(shape["aspect_ratio"])
-	target_area = float(shape["target_area_px_at_canonical"])
 	if aspect_ratio <= 0:
 		raise ValueError("template v2 bubble_shape aspect_ratio must be > 0")
 	if target_area <= 0:
-		raise ValueError("template v2 bubble_shape target_area_px_at_canonical must be > 0")
 
 
 #============================================
@@ -406,72 +375,10 @@ def get_all_question_coords(template: dict) -> list:
 
 
 #============================================
-def _derive_geometry_from_shape(shape: dict, width: int, height: int,
-	canonical: dict) -> dict:
+def _derive_geometry_from_shape():
 	"""Derive runtime geometry from v2 shape contract."""
 	aspect_ratio = float(shape["aspect_ratio"])
-	target_area_canonical = float(shape["target_area_px_at_canonical"])
-	canon_w = float(canonical.get("width_px", DEFAULT_CANONICAL_WIDTH))
-	canon_h = float(canonical.get("height_px", DEFAULT_CANONICAL_HEIGHT))
-	sx = float(width) / max(1.0, canon_w)
-	sy = float(height) / max(1.0, canon_h)
-	target_area = max(1.0, target_area_canonical * sx * sy)
-	full_h = (target_area / aspect_ratio) ** 0.5
-	full_w = aspect_ratio * full_h
-	half_w = full_w / 2.0
-	half_h = full_h / 2.0
-	geom = {
-		"half_width": max(1.0, round(half_w, 1)),
-		"half_height": max(1.0, round(half_h, 1)),
-		"center_exclusion": max(1.0, round(full_w * DEFAULT_CENTER_EXCLUSION_RATIO_W, 1)),
-		"bracket_edge_height": max(1.0, round(full_h * DEFAULT_BRACKET_EDGE_RATIO_H, 1)),
-		"measurement_inset_v": max(1.0, round(full_h * DEFAULT_MEASURE_INSET_V_RATIO_H, 1)),
-		"measurement_inset_h": max(1.0, round(full_w * DEFAULT_MEASURE_INSET_H_RATIO_W, 1)),
-		"refine_max_shift": max(1.0, round(full_h * DEFAULT_REFINE_SHIFT_RATIO_H, 1)),
-		"refine_pad_v": max(1.0, round(full_h * DEFAULT_REFINE_PAD_V_RATIO_H, 1)),
-		"refine_pad_h": max(1.0, round(full_w * DEFAULT_REFINE_PAD_H_RATIO_W, 1)),
-	}
 	return geom
-
-
-#============================================
-def _geometry_from_legacy_fields(template: dict, width: int, height: int) -> dict:
-	"""Compute geometry from legacy v1 normalized bubble_geometry fields."""
-	defaults = {
-		"half_width": 0.01765,
-		"half_height": 0.00250,
-		"center_exclusion": 0.00647,
-		"bracket_edge_height": 0.00091,
-		"measurement_inset_v": 0.00091,
-		"measurement_inset_h": 0.00176,
-		"refine_max_shift": 0.00364,
-		"refine_pad_v": 0.00364,
-		"refine_pad_h": 0.00471,
-	}
-	bg = template.get("answers", {}).get("bubble_geometry", defaults)
-	geom = {
-		"half_width": max(1.0, round(bg.get("half_width", defaults["half_width"]) * width, 1)),
-		"half_height": max(1.0, round(bg.get("half_height", defaults["half_height"]) * height, 1)),
-		"center_exclusion": max(1.0, round(bg.get("center_exclusion", defaults["center_exclusion"]) * width, 1)),
-		"bracket_edge_height": max(1.0, round(bg.get("bracket_edge_height", defaults["bracket_edge_height"]) * height, 1)),
-		"measurement_inset_v": max(1.0, round(bg.get("measurement_inset_v", defaults["measurement_inset_v"]) * height, 1)),
-		"measurement_inset_h": max(1.0, round(bg.get("measurement_inset_h", defaults["measurement_inset_h"]) * width, 1)),
-		"refine_max_shift": max(1.0, round(bg.get("refine_max_shift", defaults["refine_max_shift"]) * height, 1)),
-		"refine_pad_v": max(1.0, round(bg.get("refine_pad_v", defaults["refine_pad_v"]) * height, 1)),
-		"refine_pad_h": max(1.0, round(bg.get("refine_pad_h", defaults["refine_pad_h"]) * width, 1)),
-	}
-	return geom
-
-
-#============================================
-def get_bubble_geometry_px(template: dict, width: int, height: int) -> dict:
-	"""Convert bubble shape/geometry settings to runtime pixel geometry."""
-	answers = template.get("answers", {})
-	if "bubble_shape" in answers:
-		canonical = template.get("canonical", {})
-		return _derive_geometry_from_shape(
-			answers["bubble_shape"], width, height, canonical)
-	return _geometry_from_legacy_fields(template, width, height)
 
 
 #============================================

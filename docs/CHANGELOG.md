@@ -1,8 +1,59 @@
 # Changelog
 
+## 2026-03-06
+
+### Fixes and Maintenance
+
+- Disabled y-axis timing mark transform pass-through in `_sanitize_anchor_transform()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): the y-transform from left timing marks (scale=0.992, offset=+10px) conflicted with the affine fit from Sobel-detected edges, causing double-correction that pushed positions off bubbles and produced 13-21 all-white rows on some images; y_scale and y_offset now stay at identity, and the affine fit handles y-positioning alone
+- Replaced linear affine fit with RANSAC + quadratic polynomial in `_fit_affine_from_confident_detections()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): uses `cv2.estimateAffine2D(RANSAC)` to identify inliers (97% rate, 467/482), then fits `[tx, ty, ty^2, 1]` polynomial via lstsq on inliers only; the quadratic y-term captures barrel distortion that caused +/-2px sinusoidal y-residuals in the linear affine, fixing Q95-Q100 overlay drift
+
+### Additions and New Features
+
+- Added `_run_smoke_tests.sh` script to run `extract_answers.py` on all test images with debug overlays for quick visual verification
+- Added affine fit diagnostic output: prints inlier count, median residual, and max residual after RANSAC affine fit
+
+### Decisions and Failures
+
+- Experiment 1 (disable y-transform) eliminated double-correction from timing marks conflicting with affine fit
+- Experiment 2 (per-band y-residual diagnostics) revealed +/-2px sinusoidal pattern in linear affine residuals: classic barrel distortion that a linear model cannot capture
+- Experiment 4 (RANSAC) used for outlier rejection; combined with quadratic polynomial fit to handle non-linear distortion
+- Experiments 3 and 5 were not needed; Experiment 5 was already implemented as `_check_row_linearity()`
+- Root cause: two problems stacked: (1) timing mark y-transform double-correcting on top of affine, (2) linear affine unable to model barrel distortion in y-axis
+
 ## 2026-03-05
 
 ### Additions and New Features
+
+- Added aspect ratio filtering in `_detect_marks_in_strip()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py): left dashes require w/h >= 1.5, top boxes reject h/w > 3.0; prevents noise contours from wider search strips
+- Added hard error check in `_stage_measure_rows()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): raises `RuntimeError` when more than 25 rows have all-white measurement zones (all edge_means > 220), indicating catastrophic anchor failure
+- Added anchor confidence diagnostic print in `read_answers()`: logs left/top confidence and mark counts after `estimate_anchor_transform()` for runtime visibility
+- Added `_fit_affine_from_confident_detections()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) to fit a full 2D affine transform from Sobel-confident bubble detections using `numpy.linalg.lstsq()`; extrapolates accurate positions to all 500 bubbles, fixing cumulative y-drift at Q86-Q100
+- Added per-bubble bracket confidence check in `_stage_measure_rows()`: when bracket edge mean exceeds 200 (white paper), falls back to the affine-predicted position and re-measures
+- Added timing mark debug overlay in [run_pipeline.py](../run_pipeline.py) and [extract_answers.py](../extract_answers.py): debug PNGs now show timing mark bounding boxes via `draw_timing_mark_debug()`
+- Stored `template_px`/`template_py` (pre-transform positions) and `affine_px`/`affine_cy` (affine-predicted positions) in raw_data for fallback and debugging
+
+### Behavior or Interface Changes
+
+- Widened left timing mark search strip from 1% to 3% of image width (~34px to ~102px at 1700px) in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py); fixes root cause of only 4/60 marks detected on real scans
+- Widened top timing mark search strip from 1% to 3% of image height by the same factor
+- Relaxed `min_marks` threshold in `_estimate_axis_transform()` from `max(8, count//4)` to `max(4, count//8)` and unique index gate from `max(4, ...)` to `max(3, ...)`; accepts transforms from fewer marks on difficult scans
+- Passed `transform` to `_stage_measure_rows()` in `read_answers()` so column-lock correction can use top-anchor confidence
+- Changed `_sanitize_anchor_transform()` to pass through timing mark scale+offset fully at confidence >= 0.50 instead of blending at 40% with 3% clamp; eliminates the root cause of cumulative y-drift at the bottom of each column
+- Removed hardcoded pixel caps on `refine_max_shift`: `_refine_bubble_edges_y()` (was 8px), `_refine_bubble_edges_x()` (was 6px), neighbor correction (was 8px), and `_stage_template_refine()` (was 4px); all now use the geometry value directly
+- Increased `refine_max_shift` default from 8.0 to 15.0 in `_default_geom()` and from `8/11` to `15/11` ratio in `template_loader.py`
+- `_stage_template_refine()` now applies NCC y-corrections in addition to x-corrections, with bounds recomputed via `_default_bounds()`
+- Relaxed `_validate_bubble_rect()` thresholds: width deviation 0.30->0.40, height deviation 0.40->0.50, aspect ratio 5.0-6.5->4.0-7.5
+- Pipeline flow now includes affine fit stage between `_stage_localize_rows()` and `_stage_template_refine()`
+
+### Fixes and Maintenance
+
+- Fixed timing mark detection finding only 4/60 left marks due to 34px-wide search strip; widened to 102px, now detects all 60 left timing dashes with 0.983 confidence
+- Fixed severe cumulative y-drift where detection rectangles were a full row above actual bubbles at Q94-Q100; root cause was throttled anchor transform plus hardcoded 8px refinement caps that could not accommodate 20-40px accumulated drift
+
+### Decisions and Failures
+
+- Two-stage positioning design: global affine from confident first-pass detections handles large-scale geometry, local Sobel/NCC refinement handles small corrections; this separates macro vs micro positioning concerns
+- Confidence threshold lowered from 0.75 to 0.50 for anchor transform pass-through; the affine fit from 150+ well-detected points provides the safety net that the blend/clamp was intended to provide
 
 - Added [docs/BUBBLE_REFACTOR_EXECUTION_PLAN.md](BUBBLE_REFACTOR_EXECUTION_PLAN.md), a manager-grade execution plan for a modular bubble-reader refactor with milestone/workstream/work-package structure, dependency IDs, measurable gates, patch cadence, and rollout controls
 - Expanded the new plan to include a complete `dl1200_template.yaml` concept reboot (template v2 schema + migrator), anchor-first relative-coordinate mapping using left dark dashes and top dark boxes, distortion-stress gates, and explicit retention of dual measurement zones after localization

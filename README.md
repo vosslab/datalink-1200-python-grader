@@ -19,7 +19,7 @@ The answer key is a filled-in scantron form that goes through the same pipeline 
 
 ## Pipeline
 
-1. **Register** -- detect page boundary, correct perspective, warp to canonical rectangle
+1. **Register** -- detect page boundary, correct perspective, warp
 2. **Extract** -- score bubbles, read answers (A-E) and 9-digit student ID
 3. **Grade** -- compare student answers to key, produce scores with confidence measures
 

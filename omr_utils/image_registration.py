@@ -1,4 +1,4 @@
-"""Detect scantron boundary in a photo, correct perspective, and warp to canonical rectangle."""
+"""Detect scantron boundary in a photo, correct perspective, and warp to rectangle."""
 
 # Standard Library
 import math
@@ -308,17 +308,13 @@ def rotate_image_90(image: numpy.ndarray, degrees: int) -> numpy.ndarray:
 
 
 #============================================
-def register_image(image: numpy.ndarray, canonical_width: int = 1700,
-	canonical_height: int = 2200) -> numpy.ndarray:
+def register_image(image: numpy.ndarray) -> numpy.ndarray:
 	"""Full registration pipeline: detect page, warp, orient, resize.
 
 	Args:
 		image: BGR input image (raw photo or scan)
-		canonical_width: target output width
-		canonical_height: target output height
 
 	Returns:
-		registered image at canonical dimensions in correct orientation
 	"""
 	# detect page boundary
 	corners = find_page_contour(image)
@@ -330,8 +326,6 @@ def register_image(image: numpy.ndarray, canonical_width: int = 1700,
 	rotation = detect_orientation(warped)
 	if rotation != 0:
 		warped = rotate_image_90(warped, rotation)
-	# resize to canonical dimensions
-	registered = cv2.resize(warped, (canonical_width, canonical_height),
 		interpolation=cv2.INTER_AREA)
 	return registered
 

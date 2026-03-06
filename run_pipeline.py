@@ -14,6 +14,7 @@ import omr_utils.template_loader
 import omr_utils.image_registration
 import omr_utils.bubble_reader
 import omr_utils.debug_drawing
+import omr_utils.timing_mark_anchors
 import omr_utils.student_id_reader
 import omr_utils.csv_writer
 import omr_utils.xlsx_writer
@@ -109,36 +110,7 @@ def process_single_image(image_path: str, template: dict,
 	Returns:
 		dict with keys: csv_path, student_id, num_answered
 	"""
-	canon_w = template["canonical"]["width_px"]
-	canon_h = template["canonical"]["height_px"]
-	# load and register
-	image = omr_utils.image_registration.load_image(image_path)
-	registered = omr_utils.image_registration.register_image(
-		image, canon_w, canon_h)
-	# base filename for outputs
-	base_name = os.path.splitext(os.path.basename(image_path))[0]
-	# save registered image
-	reg_path = os.path.join(output_dir, f"{base_name}_registered.png")
-	cv2.imwrite(reg_path, registered)
-	# extract student ID
-	student_id = omr_utils.student_id_reader.read_student_id(registered, template)
-	# extract answers
-	results = omr_utils.bubble_reader.read_answers(registered, template)
-	# write CSV
-	csv_path = os.path.join(output_dir, f"{base_name}_answers.csv")
-	omr_utils.csv_writer.write_answers_csv(csv_path, student_id, results)
-	# debug overlay
-	if debug:
-		debug_img = omr_utils.debug_drawing.draw_answer_debug(
-			registered, template, results)
-		debug_path = os.path.join(output_dir, f"{base_name}_debug.png")
-		cv2.imwrite(debug_path, debug_img)
-	num_answered = sum(1 for r in results if r["answer"])
-	result = {
-		"csv_path": csv_path,
-		"student_id": student_id,
-		"num_answered": num_answered,
-	}
+
 	return result
 
 

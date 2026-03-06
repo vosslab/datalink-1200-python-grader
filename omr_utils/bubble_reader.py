@@ -45,7 +45,13 @@ def _apply_anchor_transform(px: int, py: int, transform: dict,
 
 #============================================
 def _sanitize_anchor_transform(transform: dict) -> dict:
-	"""Allow only high-confidence, bounded anchor corrections."""
+	"""Pass through anchor corrections when confidence is adequate.
+
+	When timing mark detection has sufficient confidence (>= 0.50),
+	the scale and offset are applied fully. The previous blended/clamped
+	approach caused cumulative y-drift at the bottom of each column
+	because the correction was throttled to 40% and clamped to 3%.
+	"""
 	safe = {
 		"x_scale": 1.0,
 		"x_offset": 0.0,
@@ -54,26 +60,16 @@ def _sanitize_anchor_transform(transform: dict) -> dict:
 		"top_confidence": transform.get("top_confidence", 0.0),
 		"left_confidence": transform.get("left_confidence", 0.0),
 	}
-	left_conf = float(transform.get("left_confidence", 0.0))
 	top_conf = float(transform.get("top_confidence", 0.0))
-	y_scale = float(transform.get("y_scale", 1.0))
-	y_offset = float(transform.get("y_offset", 0.0))
-	x_scale = float(transform.get("x_scale", 1.0))
-	x_offset = float(transform.get("x_offset", 0.0))
-	# y-axis uses left timing marks. Apply a blended correction so we
-	# benefit from anchor guidance without letting noisy detections
-	# oversteer lower rows.
-	if left_conf >= 0.75:
-		blend = 0.40
-		blended_scale = 1.0 + (y_scale - 1.0) * blend
-		blended_offset = y_offset * blend
-		safe["y_scale"] = max(0.97, min(1.03, blended_scale))
-		safe["y_offset"] = max(-20.0, min(20.0, blended_offset))
-	# x-axis is only applied when top-anchor confidence is high and the
-	# inferred correction is already near identity.
-	if top_conf >= 0.75 and 0.97 <= x_scale <= 1.03 and abs(x_offset) <= 20.0:
-		safe["x_scale"] = x_scale
-		safe["x_offset"] = x_offset
+	# y-axis: left timing marks provide visual confirmation only.
+	# The affine fit from Sobel-detected edges handles y-positioning;
+	# applying the timing-mark y-transform on top of that causes
+	# double-correction and pushes positions off bubbles.
+	# y_scale and y_offset stay at identity (1.0, 0.0).
+	# x-axis uses top timing marks; pass through fully when confident
+	if top_conf >= 0.50:
+		safe["x_scale"] = float(transform.get("x_scale", 1.0))
+		safe["x_offset"] = float(transform.get("x_offset", 0.0))
 	return safe
 
 
@@ -106,12 +102,11 @@ def _refine_bubble_edges_y(gray: numpy.ndarray, cx: int, cy: int,
 	hh = geom["half_height"]
 	hw = geom["half_width"]
 	pad = geom["refine_pad_v"]
-	# y refinement needs a wider window than x on phone photos
-	max_shift = min(float(geom["refine_max_shift"]), 8.0)
+	# max shift from geometry; no hardcoded cap
+	max_shift = float(geom["refine_max_shift"])
 	# default edge positions via centralized float-to-int helper
 	default_top, default_bot, _, _ = _default_bounds(cx, cy, geom)
 	# cap search extent so ROI does not overlap adjacent questions
-	# question spacing is ~31px at canonical; ROI half-size must stay under ~15px
 	search_extent = min(hh + pad, pad * 2)
 	y1 = max(0, int(cy - search_extent))
 	y2 = min(h, int(cy + search_extent))
@@ -149,7 +144,6 @@ def _refine_bubble_edges_y(gray: numpy.ndarray, cx: int, cy: int,
 	top_idx = min(peak1_idx, peak2_idx)
 	bot_idx = max(peak1_idx, peak2_idx)
 	# edge separation validation: reject pairs far outside expected range
-	# physical brackets are ~12px at canonical; half_height may be larger
 	# for measurement padding, so accept separations from 40% to 150% of expected
 	expected_separation = hh * 2
 	actual_separation = bot_idx - top_idx
@@ -193,9 +187,8 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 	h, w = gray.shape
 	hw = geom["half_width"]
 	hpad = geom["refine_pad_h"]
-	# second-pass x refinement is intentionally conservative to avoid
-	# stable but wrong row-wide horizontal drift.
-	max_shift = min(float(geom["refine_max_shift"]), 6.0)
+	# max shift from geometry; no hardcoded cap
+	max_shift = float(geom["refine_max_shift"])
 	# default edge positions via centralized float-to-int helper
 	_, _, default_left, default_right = _default_bounds(cx, cy, geom)
 	# horizontal ROI: bubble width + padding on each side
@@ -322,13 +315,11 @@ def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
 
 #============================================
 def _default_geom() -> dict:
-	"""Return default bubble geometry in pixels for canonical 1700x2200.
-
+	"""
 	Provides backward-compatible defaults when no template geometry
 	is available (e.g. for score_bubble_fast standalone calls).
 
 	Returns:
-		dict with pixel geometry values at canonical resolution
 	"""
 	geom = {
 		"half_width": 30.0,
@@ -337,7 +328,7 @@ def _default_geom() -> dict:
 		"bracket_edge_height": 2.0,
 		"measurement_inset_v": 2.0,
 		"measurement_inset_h": 3.0,
-		"refine_max_shift": 8.0,
+		"refine_max_shift": 15.0,
 		"refine_pad_v": 8.0,
 		"refine_pad_h": 8.0,
 	}
@@ -372,16 +363,15 @@ def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
 	expected_h = hh * 2
 	det_w = right_x - left_x
 	det_h = bot_y - top_y
-	# check width and height deviations independently
+	# check width and height deviations independently (relaxed for affine)
 	w_ok = (expected_w > 0
-		and abs(det_w - expected_w) / expected_w < 0.30)
+		and abs(det_w - expected_w) / expected_w < 0.40)
 	h_ok = (expected_h > 0
-		and abs(det_h - expected_h) / expected_h < 0.40)
+		and abs(det_h - expected_h) / expected_h < 0.50)
 	# explicit aspect ratio check: physical bubbles are ~5.5:1
 	det_ar = det_w / det_h if det_h > 0 else 0.0
-	ar_ok = (det_h > 0 and 5.0 <= det_ar <= 6.5)
+	ar_ok = (det_h > 0 and 4.0 <= det_ar <= 7.5)
 	# check area with resolution-scaled hard bounds
-	# at canonical 1700x2200, expected area is ~660px (60x11)
 	expected_area = expected_w * expected_h
 	det_area = det_w * det_h
 	area_ok = (expected_area > 0
@@ -690,12 +680,16 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 			norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
 				template, q_num, choice)
 			px, py = omr_utils.template_loader.to_pixels(norm_x, norm_y, w, h)
+			# store raw template pixel position before anchor transform
+			template_px = px
+			template_py = py
 			px, py = _apply_anchor_transform(px, py, transform, w, h)
 			refined_cy, top_y, bot_y = _refine_bubble_edges_y(
 				gray, px, py, geom)
 			y_refined = (refined_cy != py)
 			q_choices[choice] = {
 				"px": px, "py": py,
+				"template_px": template_px, "template_py": template_py,
 				"refined_cy": refined_cy, "y_refined": y_refined,
 				"top_y": top_y, "bot_y": bot_y,
 			}
@@ -707,7 +701,7 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 		q_choices = raw_data[q_idx]
 		row_shifts = []
 		unrefined = []
-		max_local_shift = min(int(round(float(geom["refine_max_shift"]))), 8)
+		max_local_shift = int(round(float(geom["refine_max_shift"])))
 		for choice in choices:
 			cd = q_choices[choice]
 			if cd["y_refined"]:
@@ -753,7 +747,7 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 		outliers = _check_row_linearity(q_choices, choices)
 		for choice, predicted_cy in outliers:
 			cd = q_choices[choice]
-			max_local_shift = min(int(round(float(geom["refine_max_shift"]))), 8)
+			max_local_shift = int(round(float(geom["refine_max_shift"])))
 			dy = predicted_cy - cd["py"]
 			if dy > max_local_shift:
 				predicted_cy = cd["py"] + max_local_shift
@@ -764,6 +758,101 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 			cd["top_y"] = top_y
 			cd["bot_y"] = bot_y
 	return raw_data
+
+
+#============================================
+def _fit_affine_from_confident_detections(raw_data: list, choices: list,
+	geom: dict) -> None:
+	"""Fit a 2D affine transform from confidently-detected bubble positions.
+
+	Collects bubbles where Sobel y-refinement succeeded (y_refined=True),
+	uses their template positions (pre-transform) and detected positions
+	(post-Sobel) to fit a full affine transform via least-squares. This
+	handles rotation, skew, and non-uniform scaling that timing marks
+	alone cannot capture. Modifies raw_data in place.
+
+	Requires at least 10 confident points from different rows to fit.
+	If insufficient points, the function returns without changes.
+
+	Args:
+		raw_data: list of per-question choice dicts from _stage_localize_rows
+		choices: ordered list of choice letters
+		geom: pixel geometry dict
+	"""
+	# collect confident detections
+	src_points = []
+	dst_points = []
+	for q_choices in raw_data:
+		for choice in choices:
+			cd = q_choices[choice]
+			if not cd.get("y_refined", False):
+				continue
+			# source: raw template pixel coords (pre-transform)
+			src_points.append([cd["template_px"], cd["template_py"], 1.0])
+			# destination: detected position (anchor-transformed px, Sobel-refined cy)
+			dst_points.append([cd["px"], cd["refined_cy"]])
+	# need sufficient points for a reliable affine fit
+	if len(src_points) < 10:
+		return
+	src = numpy.array(src_points, dtype=float)
+	dst = numpy.array(dst_points, dtype=float)
+	# Step 1: RANSAC affine to identify inliers vs Sobel outliers
+	src_2d = src[:, :2].astype(numpy.float64)
+	dst_2d = dst.astype(numpy.float64)
+	_, inlier_mask = cv2.estimateAffine2D(
+		src_2d.reshape(-1, 1, 2), dst_2d.reshape(-1, 1, 2),
+		method=cv2.RANSAC, ransacReprojThreshold=5.0)
+	if inlier_mask is None:
+		return
+	# flatten inlier mask and filter to inliers only
+	inlier_mask = inlier_mask.ravel().astype(bool)
+	num_inliers = int(numpy.sum(inlier_mask))
+	src_in = src[inlier_mask]
+	dst_in = dst[inlier_mask]
+	# Step 2: fit polynomial with quadratic y-term on inliers only.
+	# Linear affine leaves +/-2px sinusoidal y-residuals from barrel
+	# distortion; adding ty^2 captures the curvature.
+	# Design matrix: [tx, ty, ty^2, 1] for both x and y outputs
+	design = numpy.column_stack([
+		src_in[:, 0],
+		src_in[:, 1],
+		src_in[:, 1] ** 2,
+		numpy.ones(len(src_in)),
+	])
+	# fit x and y polynomial coefficients via least-squares
+	poly_x, _, _, _ = numpy.linalg.lstsq(design, dst_in[:, 0], rcond=None)
+	poly_y, _, _, _ = numpy.linalg.lstsq(design, dst_in[:, 1], rcond=None)
+	# compute residuals for diagnostics
+	design_all = numpy.column_stack([
+		src[:, 0], src[:, 1], src[:, 1] ** 2, numpy.ones(len(src)),
+	])
+	predicted = numpy.column_stack([
+		design_all @ poly_x, design_all @ poly_y,
+	])
+	residuals = numpy.sqrt(numpy.sum((dst - predicted) ** 2, axis=1))
+	print(f"  poly fit: {num_inliers}/{len(src_points)} inliers,"
+		f" median residual={numpy.median(residuals):.2f}px,"
+		f" max residual={numpy.max(residuals):.2f}px")
+	# apply polynomial to ALL bubble positions
+	for q_choices in raw_data:
+		for choice in choices:
+			cd = q_choices[choice]
+			tx = cd["template_px"]
+			ty = cd["template_py"]
+			# compute poly-predicted position: [tx, ty, ty^2, 1] @ coeffs
+			new_px = int(round(
+				poly_x[0] * tx + poly_x[1] * ty + poly_x[2] * ty * ty + poly_x[3]))
+			new_cy = int(round(
+				poly_y[0] * tx + poly_y[1] * ty + poly_y[2] * ty * ty + poly_y[3]))
+			cd["px"] = new_px
+			cd["refined_cy"] = new_cy
+			# store affine-predicted position for fallback use
+			cd["affine_px"] = new_px
+			cd["affine_cy"] = new_cy
+			# recompute bounds from new center
+			top_y, bot_y, _, _ = _default_bounds(new_px, new_cy, geom)
+			cd["top_y"] = top_y
+			cd["bot_y"] = bot_y
 
 
 #============================================
@@ -803,6 +892,43 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 				top_y, bot_y, left_x, right_x, geom)
 			positions[choice] = (refined_cx, refined_cy)
 			edges[choice] = (top_y, bot_y, left_x, right_x)
+		# per-bubble bracket confidence: if bracket edges are white (> 200),
+		# the measurement zone landed on white paper; fall back to affine position
+		for choice in choices:
+			cd = q_choices[choice]
+			bracket_mean = _compute_bracket_edge_mean(
+				gray, positions[choice][0], positions[choice][1],
+				edges[choice][0], edges[choice][1],
+				edges[choice][2], edges[choice][3], geom)
+			cd["bracket_confidence"] = bracket_mean
+			if bracket_mean < 0 or bracket_mean <= 200.0:
+				continue
+			# bracket edges are bright: bubble is mispositioned
+			# fall back to affine-predicted position if available
+			affine_px = cd.get("affine_px")
+			affine_cy = cd.get("affine_cy")
+			if affine_px is None or affine_cy is None:
+				continue
+			# recompute bounds from affine position
+			fb_top, fb_bot, fb_left, fb_right = _default_bounds(
+				affine_px, affine_cy, geom)
+			# try x refinement at the affine position
+			fb_cx, fb_left, fb_right = _refine_bubble_edges_x(
+				gray, affine_px, affine_cy, fb_top, fb_bot, geom)
+			fb_top, fb_bot, fb_left, fb_right, fb_cx = _validate_bubble_rect(
+				fb_top, fb_bot, fb_left, fb_right,
+				affine_px, affine_cy, geom)
+			# re-measure at corrected position
+			new_edge_mean = _compute_edge_mean(
+				gray, fb_cx, affine_cy,
+				fb_top, fb_bot, fb_left, fb_right, geom)
+			if new_edge_mean < 0:
+				continue
+			edge_means[choice] = new_edge_mean
+			positions[choice] = (fb_cx, affine_cy)
+			edges[choice] = (fb_top, fb_bot, fb_left, fb_right)
+			cd["refined_cx"] = fb_cx
+			cd["refined_cy"] = affine_cy
 		all_edge_means.append(edge_means)
 		all_positions.append(positions)
 		all_edges.append(edges)
@@ -855,6 +981,21 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 				top_y, bot_y, left_x, right_x, geom)
 			all_positions[q_idx][choice] = (refined_cx, py)
 			all_edges[q_idx][choice] = (top_y, bot_y, left_x, right_x)
+	# hard error if too many rows have all-white measurement zones
+	bad_row_count = 0
+	for q_idx in range(num_q):
+		if _check_row_brightness(all_edge_means[q_idx], choices):
+			bad_row_count += 1
+	if bad_row_count > 25:
+		left_conf = 0.0
+		top_conf_val = 0.0
+		if transform is not None:
+			left_conf = float(transform.get("left_confidence", 0.0))
+			top_conf_val = float(transform.get("top_confidence", 0.0))
+		raise RuntimeError(
+			f"Bubble detection failed: {bad_row_count} of {num_q} rows "
+			f"have no dark pixels (all edge_means > 220). "
+			f"Anchor confidence: left={left_conf:.3f}, top={top_conf_val:.3f}")
 	return (all_edge_means, all_positions, all_edges)
 
 
@@ -909,11 +1050,10 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 	template: dict, geom: dict, bubble_templates: dict) -> None:
 	"""Optional template-matching refinement pass on localized rows.
 
-	Uses NCC to refine bubble x-positions by matching pixel templates
-	of each letter against the image. Only updates positions where the
-	NCC confidence is high and the shift is small (conservative approach).
-	Does not update y-positions since Sobel-y refinement is more reliable.
-	Modifies raw_data in place.
+	Uses NCC to refine bubble x and y positions by matching pixel
+	templates of each letter against the image. Only updates positions
+	where the NCC confidence is high and the shift is within the
+	geometry limit. Modifies raw_data in place.
 
 	Args:
 		gray: grayscale image
@@ -923,8 +1063,6 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 		bubble_templates: dict mapping letter to 5X oversize template array
 	"""
 	choices = template["answers"]["choices"]
-	# conservative: only accept x shifts within 4px
-	max_x_shift = 4
 	# require high confidence for NCC-driven position updates
 	high_confidence = 0.45
 	for q_choices in raw_data:
@@ -936,7 +1074,8 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 		# run NCC refinement
 		refined = omr_utils.template_matcher.refine_row_by_template(
 			gray, bubble_templates, row_positions, geom, choices)
-		# update x-positions only when confidence is high and shift is small
+		# update x and y positions when confidence is high and shift is small
+		max_shift = int(geom["refine_max_shift"])
 		for choice in choices:
 			if choice not in refined:
 				continue
@@ -944,11 +1083,17 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 			if conf < high_confidence:
 				continue
 			cd = q_choices[choice]
+			# apply x correction
 			dx = abs(rcx - cd["px"])
-			# only accept small x corrections (avoid large shifts on
-			# phone photos where NCC may match noise)
-			if dx <= max_x_shift:
+			if dx <= max_shift:
 				cd["px"] = rcx
+			# apply y correction and recompute bounds
+			dy = abs(rcy - cd["refined_cy"])
+			if dy <= max_shift:
+				cd["refined_cy"] = rcy
+				top_y, bot_y, _, _ = _default_bounds(cd["px"], rcy, geom)
+				cd["top_y"] = top_y
+				cd["bot_y"] = bot_y
 
 
 #============================================
@@ -966,7 +1111,6 @@ def read_answers(image: numpy.ndarray, template: dict,
 	gap between filled and blank populations.
 
 	Args:
-		image: BGR registered image (perspective-corrected, canonical size)
 		template: loaded template dictionary
 		multi_gap: min spread gap between top two scores for MULTIPLE flag
 		bubble_templates: optional dict of pixel templates for NCC refinement;
@@ -986,15 +1130,21 @@ def read_answers(image: numpy.ndarray, template: dict,
 	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
 	raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
+	print(f"  anchor confidence: left={raw_transform.get('left_confidence', 0):.3f}"
+		f" top={raw_transform.get('top_confidence', 0):.3f}"
+		f" marks: left={len(raw_transform.get('left_marks', []))}"
+		f" top={len(raw_transform.get('top_marks', []))}")
 	transform = _sanitize_anchor_transform(raw_transform)
 	raw_data = _stage_localize_rows(gray, template, geom, transform)
+	# fit 2D affine from well-detected Sobel points to fix cumulative drift
+	_fit_affine_from_confident_detections(raw_data, choices, geom)
 	# optional NCC template matching refinement
 	if bubble_templates is None:
 		bubble_templates = omr_utils.template_matcher.try_load_bubble_templates()
 	if bubble_templates:
 		_stage_template_refine(gray, raw_data, template, geom, bubble_templates)
 	all_edge_means, all_positions, all_edges = _stage_measure_rows(
-		gray, raw_data, template, geom)
+		gray, raw_data, template, geom, transform)
 	results = _stage_decide_answers(
 		all_edge_means, all_positions, all_edges, choices, multi_gap)
 	return results
