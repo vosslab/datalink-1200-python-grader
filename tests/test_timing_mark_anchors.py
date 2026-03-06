@@ -44,36 +44,23 @@ def test_identity_transform_on_blank_image() -> None:
 
 
 #============================================
-def test_recovers_left_and_top_axis_transform() -> None:
-	"""Detected timing marks recover scale and offset on both axes.
+def test_recovers_top_axis_transform() -> None:
+	"""Detected top timing marks recover x-axis scale and offset.
 
 	Uses a larger synthetic image (1000x800) so top blocks have
-	realistic relative size for row-pattern detection.
+	realistic relative size for row-pattern detection. Left side
+	uses uniform marks which may not fit the 3-segment model, so
+	only top-axis recovery is tested here.
 	"""
 	h = 800
 	w = 1000
 	gray = numpy.full((h, w), 255, dtype=numpy.uint8)
 	template = _make_template(left_count=34, top_count=7)
-	left = template["timing_marks"]["left_edge"]
 	top = template["timing_marks"]["top_edge"]
 	# synthetic residual distortion to recover
-	y_scale = 1.04
-	y_offset = 5.0
 	x_scale = 0.97
 	x_offset = -4.0
-	# draw left dashes (wider than tall, in left 10% of image)
-	left_x = int(round(left["x"] * w))
-	exp_left = numpy.linspace(
-		left["start_y"] * h, left["end_y"] * h, left["expected_count"])
-	for exp_y in exp_left:
-		y = int(round(exp_y * y_scale + y_offset))
-		y1 = max(0, y - 2)
-		y2 = min(h, y + 3)
-		x1 = max(0, left_x - 8)
-		x2 = min(w, left_x + 8)
-		gray[y1:y2, x1:x2] = 0
 	# draw 7 large top blocks in top 10% strip
-	# each block ~2% of width, ~30% of strip height
 	strip_h = int(h * 0.10)
 	block_w = int(w * 0.02)
 	block_h = int(strip_h * 0.30)
@@ -90,11 +77,8 @@ def test_recovers_left_and_top_axis_transform() -> None:
 		gray[y1:y2, x1:x2] = 0
 	result = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
-	assert result["left_confidence"] > 0.35
 	assert result["top_confidence"] > 0.35
-	assert abs(result["y_scale"] - y_scale) < 0.10
 	assert abs(result["x_scale"] - x_scale) < 0.10
-	assert abs(result["y_offset"] - y_offset) < 12.0
 	assert abs(result["x_offset"] - x_offset) < 16.0
 
 
@@ -315,3 +299,271 @@ class TestMarkIndexConversion:
 			back = omr_utils.timing_mark_anchors.normalized_to_mark_index(
 				norm, start, end, count)
 			assert abs(back - idx) < 1e-10
+
+
+#============================================
+def _draw_3segment_left_marks(gray: numpy.ndarray,
+	left_x: int, y_start: int, spacing: float,
+	n_top: int, n_id: int, n_q: int,
+	gap_a: float, gap_b: float,
+	dash_w: int = 16, dash_h: int = 5) -> list:
+	"""Draw a 3-segment left-side timing mark column on a grayscale image.
+
+	Returns the list of expected center_y values for all marks drawn.
+
+	Args:
+		gray: grayscale image to draw on (modified in place)
+		left_x: x center for the dash column
+		y_start: y-position of the first mark
+		spacing: within-segment spacing in pixels
+		n_top: number of top marks
+		n_id: number of ID marks
+		n_q: number of question marks
+		gap_a: gap between top and ID segments
+		gap_b: gap between ID and question segments
+		dash_w: half-width of each dash
+		dash_h: half-height of each dash
+
+	Returns:
+		list of center_y values for all marks drawn
+	"""
+	h = gray.shape[0]
+	expected_ys = []
+	y = float(y_start)
+	# segment A: top marks
+	for i in range(n_top):
+		cy = y + i * spacing
+		iy = int(round(cy))
+		y1 = max(0, iy - dash_h)
+		y2 = min(h, iy + dash_h)
+		x1 = max(0, left_x - dash_w)
+		x2 = min(gray.shape[1], left_x + dash_w)
+		gray[y1:y2, x1:x2] = 0
+		expected_ys.append(cy)
+	# gap A
+	y_id_start = y + (n_top - 1) * spacing + gap_a
+	# segment B: ID marks
+	for i in range(n_id):
+		cy = y_id_start + i * spacing
+		iy = int(round(cy))
+		y1 = max(0, iy - dash_h)
+		y2 = min(h, iy + dash_h)
+		x1 = max(0, left_x - dash_w)
+		x2 = min(gray.shape[1], left_x + dash_w)
+		gray[y1:y2, x1:x2] = 0
+		expected_ys.append(cy)
+	# gap B
+	y_q_start = y_id_start + (n_id - 1) * spacing + gap_b
+	# segment C: question marks
+	for i in range(n_q):
+		cy = y_q_start + i * spacing
+		iy = int(round(cy))
+		y1 = max(0, iy - dash_h)
+		y2 = min(h, iy + dash_h)
+		x1 = max(0, left_x - dash_w)
+		x2 = min(gray.shape[1], left_x + dash_w)
+		gray[y1:y2, x1:x2] = 0
+		expected_ys.append(cy)
+	return expected_ys
+
+
+#============================================
+class TestLeftFootprint:
+	"""Tests for the 3-segment left-side structural fitting."""
+
+	def test_extract_left_candidates_finds_dashes(self) -> None:
+		"""Candidate extraction finds dash-like marks in left strip."""
+		# create a small strip with 10 horizontal dashes
+		strip = numpy.full((500, 60), 255, dtype=numpy.uint8)
+		for i in range(10):
+			y = 20 + i * 45
+			strip[y - 3:y + 3, 10:50] = 0
+		candidates = omr_utils.timing_mark_anchors._extract_left_candidates(
+			strip)
+		assert len(candidates) >= 8
+		# candidates should be sorted by center_y
+		for i in range(1, len(candidates)):
+			assert candidates[i]["center_y"] >= candidates[i - 1]["center_y"]
+
+	def test_build_vertical_family_filters_outliers(self) -> None:
+		"""Vertical family builder filters marks far from dominant column."""
+		# create candidates: most at x=30, a few outliers at x=100
+		candidates = []
+		for i in range(20):
+			candidates.append({
+				"center_x": 30.0 + (i % 3) * 2.0,
+				"center_y": float(50 + i * 20),
+				"width": 30,
+				"height": 5,
+				"area": 150,
+				"aspect_ratio": 6.0,
+				"fill_ratio": 0.8,
+				"bbox": (15, 50 + i * 20 - 2, 30, 5),
+			})
+		# add outliers at different x
+		for i in range(3):
+			candidates.append({
+				"center_x": 100.0,
+				"center_y": float(60 + i * 50),
+				"width": 30,
+				"height": 5,
+				"area": 150,
+				"aspect_ratio": 6.0,
+				"fill_ratio": 0.8,
+				"bbox": (85, 60 + i * 50 - 2, 30, 5),
+			})
+		family = omr_utils.timing_mark_anchors._build_left_vertical_family(
+			candidates)
+		# outliers should be filtered out
+		assert len(family) == 20
+
+	def test_match_predictions_to_marks_y(self) -> None:
+		"""Y-axis prediction matching finds correct 1:1 pairs."""
+		marks = [
+			{"center_y": 10.0},
+			{"center_y": 25.0},
+			{"center_y": 40.0},
+			{"center_y": 55.0},
+		]
+		predictions = [11.0, 24.0, 41.0, 54.0]
+		matches = omr_utils.timing_mark_anchors._match_predictions_to_marks_y(
+			predictions, marks, match_tol=5.0)
+		assert len(matches) == 4
+		# verify each prediction matched the correct mark
+		for pred, mark in matches:
+			assert abs(pred - mark["center_y"]) < 5.0
+
+	def test_fit_left_footprint_on_synthetic_62_marks(self) -> None:
+		"""Structural fitter recovers 2+10+50 from synthetic marks."""
+		h = 2000
+		w = 200
+		gray = numpy.full((h, w), 255, dtype=numpy.uint8)
+		# draw 3-segment column: 2 top + gap + 10 ID + gap + 50 questions
+		spacing = 22.0
+		gap_a = spacing * 3.5
+		gap_b = spacing * 2.8
+		expected_ys = _draw_3segment_left_marks(
+			gray, left_x=30, y_start=40, spacing=spacing,
+			n_top=2, n_id=10, n_q=50,
+			gap_a=gap_a, gap_b=gap_b)
+		assert len(expected_ys) == 62
+		# extract candidates
+		strip = gray[:, 0:60]
+		candidates = omr_utils.timing_mark_anchors._extract_left_candidates(
+			strip)
+		assert len(candidates) >= 50
+		# build family
+		family = omr_utils.timing_mark_anchors._build_left_vertical_family(
+			candidates)
+		assert len(family) >= 50
+		# fit footprint
+		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		assert result is not None
+		assert result["score"] > 0.0
+		assert result["n_matched"] >= 50
+		# verify segment marks
+		assert len(result["top_marks"]) == 2
+		assert len(result["id_marks"]) == 10
+		assert len(result["question_marks"]) == 50
+		# spacing should be close to the true value
+		assert abs(result["s_q"] - spacing) < spacing * 0.15
+
+	def test_full_pipeline_3segment_image(self) -> None:
+		"""Full pipeline finds 3-segment footprint and populates transform."""
+		h = 3000
+		w = 400
+		gray = numpy.full((h, w), 255, dtype=numpy.uint8)
+		template = _make_template(left_count=62, top_count=7)
+		# draw 3-segment left column starting within the left strip region
+		# strip region is start_y=0.10*h=300 to end_y=0.90*h=2700
+		spacing = 28.0
+		gap_a = spacing * 3.0
+		gap_b = spacing * 2.5
+		_draw_3segment_left_marks(
+			gray, left_x=15, y_start=350, spacing=spacing,
+			n_top=2, n_id=10, n_q=50,
+			gap_a=gap_a, gap_b=gap_b)
+		result = omr_utils.timing_mark_anchors.estimate_anchor_transform(
+			gray, template)
+		# structural fit should succeed
+		assert result["left_confidence"] > 0.0
+		# verify segment mark lists populated
+		assert len(result["left_top_marks"]) == 2
+		assert len(result["left_id_marks"]) == 10
+		assert len(result["left_question_marks"]) == 50
+		# spacing values should be populated
+		assert result["left_s_q"] > 0.0
+		assert result["left_s_id"] > 0.0
+		# all 62 marks in combined list
+		assert len(result["left_marks"]) == 62
+		# gap values should be positive
+		assert result["left_gap_a"] > 0.0
+		assert result["left_gap_b"] > 0.0
+
+	def test_question_marks_ordered_by_y(self) -> None:
+		"""Question marks should be in ascending y order for guide lines."""
+		h = 2000
+		w = 200
+		gray = numpy.full((h, w), 255, dtype=numpy.uint8)
+		spacing = 22.0
+		gap_a = spacing * 3.5
+		gap_b = spacing * 2.8
+		_draw_3segment_left_marks(
+			gray, left_x=30, y_start=40, spacing=spacing,
+			n_top=2, n_id=10, n_q=50,
+			gap_a=gap_a, gap_b=gap_b)
+		strip = gray[:, 0:60]
+		candidates = omr_utils.timing_mark_anchors._extract_left_candidates(
+			strip)
+		family = omr_utils.timing_mark_anchors._build_left_vertical_family(
+			candidates)
+		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		assert result is not None
+		q_marks = result["question_marks"]
+		assert len(q_marks) == 50
+		# verify ascending y order
+		for i in range(1, len(q_marks)):
+			assert q_marks[i]["center_y"] > q_marks[i - 1]["center_y"]
+
+	def test_too_few_candidates_returns_none(self) -> None:
+		"""Fitter returns None when too few candidates are provided."""
+		# only 5 marks: far too few for 62-mark structural fit
+		family = []
+		for i in range(5):
+			family.append({
+				"center_x": 30.0,
+				"center_y": float(50 + i * 20),
+				"width": 30,
+				"height": 5,
+				"area": 150,
+				"bbox": (15, 50 + i * 20, 30, 5),
+			})
+		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		assert result is None
+
+	def test_uniform_marks_fail_structural_fit(self) -> None:
+		"""Evenly spaced marks without gaps should fail or score low."""
+		# 34 evenly spaced marks (no 3-segment structure)
+		family = []
+		for i in range(34):
+			family.append({
+				"center_x": 30.0,
+				"center_y": float(50 + i * 20),
+				"width": 30,
+				"height": 5,
+				"area": 150,
+				"bbox": (15, 50 + i * 20, 30, 5),
+			})
+		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		# should fail (return None) or have zero score
+		if result is not None:
+			assert result["score"] == 0.0
+
+	def test_score_left_footprint_rejects_bad_count(self) -> None:
+		"""Score function returns 0 when prediction count is wrong."""
+		# 61 predictions instead of 62
+		predictions = [float(i * 20) for i in range(61)]
+		family = [{"center_y": float(i * 20)} for i in range(61)]
+		result = omr_utils.timing_mark_anchors._score_left_footprint(
+			predictions, family, s_id=20.0, s_q=20.0)
+		assert result["score"] == 0.0

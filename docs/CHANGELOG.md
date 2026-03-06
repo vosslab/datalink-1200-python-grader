@@ -4,6 +4,18 @@
 
 ### Additions and New Features
 
+- Replaced legacy single-linear left-side timing detection with piecewise 3-segment structural fitter (2 top + 10 ID + 50 question = 62 marks) in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py)
+- New `_extract_left_candidates()` extracts dash-like candidates from the left strip using Otsu + morphology with relative area thresholds
+- New `_build_left_vertical_family()` filters candidates to a single dominant vertical column by x-center consistency and height similarity
+- New `_match_predictions_to_marks_y()` performs 1:1 greedy matching of predicted y-positions to observed marks
+- New `_fit_left_footprint()` implements blob-find-and-fit 3-segment fitting: repairs missing marks, splits at the largest gap (between ID and questions), generates per-segment predictions using median spacing, and scores against observed marks
+- New `_repair_gaps()` interpolates missing marks where gap exceeds 1.4x median spacing
+- New `_score_left_footprint()` applies hard acceptance gates (match count, max residual, spacing CV) then continuous scoring (match fraction, residual quality, spacing consistency)
+- Module constants `N_TOP=2`, `N_ID=10`, `N_Q=50`, `N_TOTAL=62` define the DataLink 1200 left-side structure
+- Guide lines in `draw_timing_mark_debug()` now derive exclusively from the fitted 50-question segment, using direct 0-indexed access (Q5 = index 4, Q50 = index 49) instead of the old bottom-anchored global formula
+- Left marks in debug overlay now colored by segment: red (top 2), green (ID 10), cyan (question 50), with gap-A and gap-B boundary labels
+- Transform dict now includes structural keys: `left_top_marks`, `left_id_marks`, `left_question_marks`, `left_s_id`, `left_s_q`, `left_gap_a`, `left_gap_b`, `left_raw_candidates`
+- Added 9 new tests in `TestLeftFootprint` class covering candidate extraction, vertical family filtering, y-axis matching, synthetic 62-mark fitting, full pipeline integration, ordering, edge cases, and score rejection
 - Added top timing footprint detection with Row-2 verification in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py): new `_approx_gcd_spacing()`, `_fit_row1_model()`, `_predict_row2_right_thins()`, `_match_predictions_to_marks()`, `_score_footprint_hypothesis()`, and `_detect_top_footprint()` functions implement the 10-step footprint detection algorithm
 - `_fit_row1_model()` infers base column spacing from any 3 seed blobs using approximate GCD, then predicts column positions across the full strip width
 - `_predict_row2_right_thins()` predicts the two right-side Row-2 thin marks (gap-thin-gap-thin pattern) relative to the matched Row-1 footprint extent, not the full strip width
@@ -15,6 +27,11 @@
 
 ### Behavior or Interface Changes
 
+- Left-side detection in `estimate_anchor_transform()` no longer computes `y_scale`/`y_offset` from a single linear fit; it populates structural segment data instead (y-axis transform was already disabled downstream)
+- Removed legacy `_estimate_axis_transform()` call for left marks; the structural fitter is now the sole left-side source of truth
+- Old global-index guide line formula `mark_idx = last_idx - (50 - q_num)` replaced with direct question-segment indexing `mark_idx = q_num - 1`
+- Failed left fit now produces `left_confidence = 0.0` and no guide lines instead of silently wrong guide lines
+- `test_recovers_left_and_top_axis_transform` renamed to `test_recovers_top_axis_transform` since left side no longer produces linear transform
 - Consolidated debug output from 4 images per scan (`_timing_candidates.png`, `_timing_final.png`, `_registered.png`, `_answers.png`) to 2 images: `_scored.png` (bubble status with confidence) and `_debug.png` (all layers combined: timing candidates, final marks, guide lines, and bubble overlays)
 - Added `draw_scored_overlay()` and `draw_combined_debug()` to [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) for the consolidated output
 - Added Row-2 thin mark boxes (columns 10 and 12) to `draw_timing_mark_debug()` debug overlay, labeled "R2" in cyan-blue
@@ -38,7 +55,7 @@
 ### Behavior or Interface Changes
 
 - Changed top strip geometry from `[start_x..end_x, 0..5%h]` to `[0..w, 0..10%h]` (full width, top 10% height) for row-pattern detection; the row scorer now handles filtering instead of pre-cropping
-- Changed left strip geometry from centered `4%` band around `left_edge.x` to `[0..10%w]` (left 10% width, full height)
+- Changed left strip geometry from centered `4%` band around `left_edge.x` to `[0..8%w]` (left 8% width, full height)
 - Adjusted `_estimate_axis_transform()` count adequacy threshold to scale with expected_count (`min(25, count*0.8)`) so small mark sets (7 top blocks) can reach full confidence
 
 ### Removals and Deprecations
@@ -47,6 +64,7 @@
 - Removed `_find_best_y_cluster()`: replaced by `_cluster_components_into_rows()` which uses median-height-based gap splitting instead of sliding window
 - Removed `_validate_final_blocks()`: replaced by row scoring in `_score_timing_row()`
 - Removed `_dedupe_by_x_center()`: replaced by `_dedupe_row_components()`
+- Removed `_dedupe_sorted()`, `_dedupe_sorted_marks()`, `_detect_marks_in_strip()`, and `_detect_centers_in_strip()`: dead code chain superseded by `_extract_components()` for top marks and `_extract_left_candidates()` for left marks
 
 ### Behavior or Interface Changes
 
