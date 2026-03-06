@@ -172,6 +172,52 @@ def get_all_question_coords(template: dict) -> list:
 
 
 #============================================
+def get_bubble_geometry_px(template: dict, width: int, height: int) -> dict:
+	"""Convert normalized bubble geometry to pixel values for a given image size.
+
+	Reads the bubble_geometry section from the template and scales each
+	value to pixel coordinates. Falls back to hardcoded defaults if the
+	section is absent from the template.
+
+	Args:
+		template: loaded template dictionary
+		width: image width in pixels
+		height: image height in pixels
+
+	Returns:
+		dict with pixel values for all bubble geometry parameters
+	"""
+	# default normalized values (match YAML template at 1700x2200)
+	defaults = {
+		"half_width": 0.01765,
+		"half_height": 0.00250,
+		"center_exclusion": 0.00647,
+		"bracket_edge_height": 0.00091,
+		"measurement_inset_v": 0.00091,
+		"measurement_inset_h": 0.00176,
+		"refine_max_shift": 0.00364,
+		"refine_pad_v": 0.00364,
+		"refine_pad_h": 0.00471,
+	}
+	# read from template if present, else use defaults
+	bg = template.get("answers", {}).get("bubble_geometry", defaults)
+	# horizontal values scale with width, vertical with height
+	# return float values; consumers use int() only at array-slicing boundaries
+	geom = {
+		"half_width": max(1.0, round(bg.get("half_width", defaults["half_width"]) * width, 1)),
+		"half_height": max(1.0, round(bg.get("half_height", defaults["half_height"]) * height, 1)),
+		"center_exclusion": max(1.0, round(bg.get("center_exclusion", defaults["center_exclusion"]) * width, 1)),
+		"bracket_edge_height": max(1.0, round(bg.get("bracket_edge_height", defaults["bracket_edge_height"]) * height, 1)),
+		"measurement_inset_v": max(1.0, round(bg.get("measurement_inset_v", defaults["measurement_inset_v"]) * height, 1)),
+		"measurement_inset_h": max(1.0, round(bg.get("measurement_inset_h", defaults["measurement_inset_h"]) * width, 1)),
+		"refine_max_shift": max(1.0, round(bg.get("refine_max_shift", defaults["refine_max_shift"]) * height, 1)),
+		"refine_pad_v": max(1.0, round(bg.get("refine_pad_v", defaults["refine_pad_v"]) * height, 1)),
+		"refine_pad_h": max(1.0, round(bg.get("refine_pad_h", defaults["refine_pad_h"]) * width, 1)),
+	}
+	return geom
+
+
+#============================================
 def get_all_student_id_coords(template: dict) -> list:
 	"""Return all bubble positions for the student ID grid.
 

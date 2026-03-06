@@ -2,6 +2,7 @@
 
 # Standard Library
 import os
+import glob
 
 # PIP3 modules
 import pytest
@@ -13,6 +14,7 @@ import omr_utils.image_registration
 import omr_utils.bubble_reader
 import omr_utils.student_id_reader
 import omr_utils.csv_writer
+import omr_utils.xlsx_writer
 import grade_answers
 
 REPO_ROOT = git_file_utils.get_repo_root()
@@ -20,9 +22,8 @@ TEMPLATE_PATH = os.path.join(REPO_ROOT, "config", "dl1200_template.yaml")
 SCANTRON_DIR = os.path.join(REPO_ROOT, "scantrons")
 OUTPUT_DIR = os.path.join(REPO_ROOT, "output_smoke")
 
-KEY_SHEET = os.path.join(SCANTRON_DIR,
-	"8B5D0C61-395B-4E28-AED1-3E0D9959FAE0_result.jpg")
-BOTELLO = os.path.join(SCANTRON_DIR, "Botello_2.24.26.jpg")
+KEY_IMAGE = os.path.join(SCANTRON_DIR,
+	"43F257A7-A03D-4CB2-8D7B-3EE057B41FAC_result.jpg")
 
 
 #============================================
@@ -30,6 +31,19 @@ def _skip_if_no_scantrons() -> None:
 	"""Skip test if scantron images are not available."""
 	if not os.path.isdir(SCANTRON_DIR):
 		pytest.skip("scantrons/ directory not found")
+
+
+#============================================
+def _get_student_images() -> list:
+	"""Discover student images by excluding the key image.
+
+	Returns:
+		sorted list of student image paths
+	"""
+	key_base = os.path.basename(KEY_IMAGE)
+	all_images = sorted(glob.glob(os.path.join(SCANTRON_DIR, "*.jpg")))
+	students = [p for p in all_images if os.path.basename(p) != key_base]
+	return students
 
 
 #============================================
@@ -56,7 +70,7 @@ class TestEndToEnd:
 		setup_output: str) -> None:
 		"""Answer key Q28 should be E."""
 		_skip_if_no_scantrons()
-		img = omr_utils.image_registration.load_image(KEY_SHEET)
+		img = omr_utils.image_registration.load_image(KEY_IMAGE)
 		canon_w = template["canonical"]["width_px"]
 		canon_h = template["canonical"]["height_px"]
 		registered = omr_utils.image_registration.register_image(
@@ -65,11 +79,14 @@ class TestEndToEnd:
 		q28 = [r for r in results if r["question"] == 28][0]
 		assert q28["answer"] == "E"
 
-	def test_botello_extraction_q28_e(self, template: dict,
+	def test_student_extraction_q28_e(self, template: dict,
 		setup_output: str) -> None:
-		"""Botello Q28 should be E."""
+		"""First discovered student Q28 should be E."""
 		_skip_if_no_scantrons()
-		img = omr_utils.image_registration.load_image(BOTELLO)
+		students = _get_student_images()
+		if not students:
+			pytest.skip("no student images found")
+		img = omr_utils.image_registration.load_image(students[0])
 		canon_w = template["canonical"]["width_px"]
 		canon_h = template["canonical"]["height_px"]
 		registered = omr_utils.image_registration.register_image(
@@ -82,7 +99,7 @@ class TestEndToEnd:
 		setup_output: str) -> None:
 		"""Answer key should have at least 50 detected answers."""
 		_skip_if_no_scantrons()
-		img = omr_utils.image_registration.load_image(KEY_SHEET)
+		img = omr_utils.image_registration.load_image(KEY_IMAGE)
 		canon_w = template["canonical"]["width_px"]
 		canon_h = template["canonical"]["height_px"]
 		registered = omr_utils.image_registration.register_image(
@@ -93,30 +110,74 @@ class TestEndToEnd:
 
 	def test_grading_produces_valid_score(self, template: dict,
 		setup_output: str) -> None:
-		"""Grading Botello against key produces a valid percentage."""
+		"""Grading first student against key produces a valid percentage."""
 		_skip_if_no_scantrons()
-		# process key
-		img_key = omr_utils.image_registration.load_image(KEY_SHEET)
+		students = _get_student_images()
+		if not students:
+			pytest.skip("no student images found")
 		canon_w = template["canonical"]["width_px"]
 		canon_h = template["canonical"]["height_px"]
+		# process key
+		img_key = omr_utils.image_registration.load_image(KEY_IMAGE)
 		reg_key = omr_utils.image_registration.register_image(
 			img_key, canon_w, canon_h)
 		key_results = omr_utils.bubble_reader.read_answers(reg_key, template)
-		key_id = omr_utils.student_id_reader.read_student_id(reg_key, template)
+		key_id = omr_utils.student_id_reader.read_student_id(
+			reg_key, template)
 		key_csv = os.path.join(setup_output, "key_answers.csv")
 		omr_utils.csv_writer.write_answers_csv(key_csv, key_id, key_results)
-		# process Botello
-		img_bot = omr_utils.image_registration.load_image(BOTELLO)
-		reg_bot = omr_utils.image_registration.register_image(
-			img_bot, canon_w, canon_h)
-		bot_results = omr_utils.bubble_reader.read_answers(reg_bot, template)
-		bot_id = omr_utils.student_id_reader.read_student_id(reg_bot, template)
-		bot_csv = os.path.join(setup_output, "botello_answers.csv")
-		omr_utils.csv_writer.write_answers_csv(bot_csv, bot_id, bot_results)
+		# process first student
+		img_stu = omr_utils.image_registration.load_image(students[0])
+		reg_stu = omr_utils.image_registration.register_image(
+			img_stu, canon_w, canon_h)
+		stu_results = omr_utils.bubble_reader.read_answers(reg_stu, template)
+		stu_id = omr_utils.student_id_reader.read_student_id(
+			reg_stu, template)
+		stu_csv = os.path.join(setup_output, "student_answers.csv")
+		omr_utils.csv_writer.write_answers_csv(
+			stu_csv, stu_id, stu_results)
 		# grade
 		key_data = omr_utils.csv_writer.read_answers_csv(key_csv)
-		bot_data = omr_utils.csv_writer.read_answers_csv(bot_csv)
-		graded = grade_answers.grade_student(bot_data, key_data)
+		stu_data = omr_utils.csv_writer.read_answers_csv(stu_csv)
+		graded = grade_answers.grade_student(stu_data, key_data)
 		assert 0.0 <= graded["percentage"] <= 100.0
 		assert graded["total_questions"] > 0
 		assert graded["raw_score"] >= 0
+
+	def test_xlsx_created(self, template: dict,
+		setup_output: str) -> None:
+		"""Pipeline produces scoring_summary.xlsx in output dir."""
+		_skip_if_no_scantrons()
+		students = _get_student_images()
+		if not students:
+			pytest.skip("no student images found")
+		canon_w = template["canonical"]["width_px"]
+		canon_h = template["canonical"]["height_px"]
+		# process key
+		img_key = omr_utils.image_registration.load_image(KEY_IMAGE)
+		reg_key = omr_utils.image_registration.register_image(
+			img_key, canon_w, canon_h)
+		key_results = omr_utils.bubble_reader.read_answers(reg_key, template)
+		key_id = omr_utils.student_id_reader.read_student_id(
+			reg_key, template)
+		key_csv = os.path.join(setup_output, "key_answers.csv")
+		omr_utils.csv_writer.write_answers_csv(key_csv, key_id, key_results)
+		key_data = omr_utils.csv_writer.read_answers_csv(key_csv)
+		# process first student
+		img_stu = omr_utils.image_registration.load_image(students[0])
+		reg_stu = omr_utils.image_registration.register_image(
+			img_stu, canon_w, canon_h)
+		stu_results = omr_utils.bubble_reader.read_answers(reg_stu, template)
+		stu_id = omr_utils.student_id_reader.read_student_id(
+			reg_stu, template)
+		stu_csv = os.path.join(setup_output, "student_answers.csv")
+		omr_utils.csv_writer.write_answers_csv(
+			stu_csv, stu_id, stu_results)
+		stu_data = omr_utils.csv_writer.read_answers_csv(stu_csv)
+		# grade
+		graded = grade_answers.grade_student(stu_data, key_data)
+		# write XLSX
+		xlsx_path = os.path.join(setup_output, "scoring_summary.xlsx")
+		omr_utils.xlsx_writer.write_scoring_summary(
+			xlsx_path, key_data, [stu_data], [graded])
+		assert os.path.isfile(xlsx_path)

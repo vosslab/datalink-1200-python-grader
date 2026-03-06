@@ -39,6 +39,16 @@ answers:
   num_questions: 100
   choices: [A, B, C, D, E]
   bubble_radius: 0.006
+  bubble_geometry:
+    half_width: 0.01765       # 30px at 1700w
+    half_height: 0.00250      # 5.5px at 2200h (physical ~6:1 aspect ratio)
+    center_exclusion: 0.00647 # 11px at 1700w
+    bracket_edge_height: 0.00091  # 2px at 2200h
+    measurement_inset_v: 0.00091  # 2px at 2200h
+    measurement_inset_h: 0.00176  # 3px at 1700w
+    refine_max_shift: 0.00364     # 8px at 2200h
+    refine_pad_v: 0.00364         # 8px at 2200h
+    refine_pad_h: 0.00471         # 8px at 1700w
 
   # Left column: questions 1-50
   left_column:

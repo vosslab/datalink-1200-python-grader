@@ -30,6 +30,8 @@ def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
 	sid_config = template["student_id"]
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
+	# get bubble geometry scaled to this image size
+	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
 	digits = []
 	for d in range(num_digits):
 		best_value = 0
@@ -38,7 +40,8 @@ def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
 			norm_x, norm_y = omr_utils.template_loader.get_student_id_coords(
 				template, d, v)
 			px, py = omr_utils.template_loader.to_pixels(norm_x, norm_y, w, h)
-			score = omr_utils.bubble_reader.score_bubble_fast(gray, px, py, radius)
+			score = omr_utils.bubble_reader.score_bubble_fast(
+				gray, px, py, radius, geom)
 			if score > best_score:
 				best_score = score
 				best_value = v
@@ -71,6 +74,8 @@ def read_student_id_detailed(image, template: dict,
 	sid_config = template["student_id"]
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
+	# get bubble geometry scaled to this image size
+	geom = omr_utils.template_loader.get_bubble_geometry_px(template, w, h)
 	digit_details = []
 	id_string = ""
 	for d in range(num_digits):
@@ -79,7 +84,8 @@ def read_student_id_detailed(image, template: dict,
 			norm_x, norm_y = omr_utils.template_loader.get_student_id_coords(
 				template, d, v)
 			px, py = omr_utils.template_loader.to_pixels(norm_x, norm_y, w, h)
-			score = omr_utils.bubble_reader.score_bubble_fast(gray, px, py, radius)
+			score = omr_utils.bubble_reader.score_bubble_fast(
+				gray, px, py, radius, geom)
 			scores[v] = score
 		# find best
 		best_value = max(scores, key=scores.get)

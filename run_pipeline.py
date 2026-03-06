@@ -15,6 +15,7 @@ import omr_utils.image_registration
 import omr_utils.bubble_reader
 import omr_utils.student_id_reader
 import omr_utils.csv_writer
+import omr_utils.xlsx_writer
 import grade_answers
 
 
@@ -171,6 +172,9 @@ def main() -> None:
 	# load key CSV for grading
 	key_data = omr_utils.csv_writer.read_answers_csv(key_csv)
 	# process each student image
+	# collect results for XLSX summary
+	all_student_data = []
+	all_graded_results = []
 	print(f"\n=== Processing {len(student_paths)} student images ===")
 	for image_path in student_paths:
 		base_name = os.path.splitext(os.path.basename(image_path))[0]
@@ -190,6 +194,14 @@ def main() -> None:
 		if graded["low_confidence"]:
 			lc_str = ", ".join(f"q{q}" for q in graded["low_confidence"])
 			print(f"    low confidence: {lc_str}")
+		all_student_data.append(student_data)
+		all_graded_results.append(graded)
+	# write XLSX scoring summary
+	if all_graded_results:
+		xlsx_path = os.path.join(args.output_dir, "scoring_summary.xlsx")
+		omr_utils.xlsx_writer.write_scoring_summary(
+			xlsx_path, key_data, all_student_data, all_graded_results)
+		print(f"\n  XLSX summary: {xlsx_path}")
 	print("\n=== Done ===")
 
 
