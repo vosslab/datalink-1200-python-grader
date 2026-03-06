@@ -4,6 +4,109 @@
 
 ### Additions and New Features
 
+- Created [omr_utils/slot_map.py](../omr_utils/slot_map.py) with `SlotMap` class as the single geometry authority for bubble slot positions. Builds pixel coordinates directly from timing mark anchors: row y from `left_question_marks`, column x from `top_fp_x0 + choice_columns * fine_step`. Provides `center()`, `row_center()`, `choice_center()`, `roi_bounds()`, and `geom()` methods.
+- Added `draw_lattice_crosshairs()` to [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Draws small crosshairs at every `SlotMap.center()` position for independent geometry verification. Saved as `{base_name}_lattice.png` in debug mode.
+
+### Behavior or Interface Changes
+
+- `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) now accepts a `slot_map` parameter (SlotMap instance). When provided, skips internal timing mark detection and uses the SlotMap directly. All geometry flows through SlotMap; no YAML coordinates are consulted for bubble placement.
+- `_stage_localize_rows()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) simplified to pure lattice positions from SlotMap. No Sobel y-refinement, no neighbor correction, no linearity check, no affine fit.
+- `_stage_measure_rows()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) simplified: removed bracket confidence fallback to affine position, column-lock correction pass, and all-white brightness sanity fallback. Uses SlotMap for lattice bounds.
+- [run_pipeline.py](../run_pipeline.py) now constructs a `SlotMap` from `estimate_anchor_transform()` output and passes it to `read_answers()`. Single geometry authority for the entire pipeline.
+- [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py): removed all `get_bubble_coords()`/`to_pixels()` fallback paths. Debug tools now visualize only the `positions` dict from results, never recompute coordinates from YAML. Removed `_compute_refinement_shift_data()` and shift vector drawing.
+- [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py) now uses `SlotMap.geom()` instead of removed `anchor_geom()` for bubble geometry.
+
+### Removals and Deprecations
+
+- Removed from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): `_apply_anchor_transform()`, `_sanitize_anchor_transform()`, `lattice_slot_centers()`, `lattice_row_centers()`, `lattice_choice_centers()`, `lattice_roi_bounds()`, `_lattice_bounds_at_center()`, `anchor_geom()`, `_fit_affine_from_confident_detections()`. All absorbed into `SlotMap` class or removed as no longer needed.
+- Removed from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): `_check_row_linearity()`, `_check_column_alignment()`, `_check_row_brightness()`, `_select_rect_by_bracket_signal()`. These correction passes are no longer needed with pure lattice geometry.
+- Removed K-constants from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py); moved to [omr_utils/slot_map.py](../omr_utils/slot_map.py) as the sole consumer.
+- Removed `draw_lattice_centers_debug()` from [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py), replaced by `draw_lattice_crosshairs()` which uses SlotMap directly.
+
+### Decisions and Failures
+
+- Architecture decision: SlotMap is the single source of truth for all bubble geometry. No YAML coordinates, no affine correction, no Sobel y-refinement for initial placement. Local x-edge refinement within the lattice ROI is still performed for precise measurement zones.
+- The affine fit from confident Sobel detections (`_fit_affine_from_confident_detections()`) was the core contamination source that caused 0/99 correct results. It overwrote all positions with YAML-derived predictions, defeating the lattice-based placement.
+
+### Developer Tests and Notes
+
+- Updated tests in [tests/test_bubble_template_extractor.py](../tests/test_bubble_template_extractor.py): replaced `anchor_geom()` tests with `SlotMap.geom()` equivalents. Added `_make_mock_transform()` and `_make_mock_template()` helpers.
+- Updated [tools/build_bubble_templates.py](../tools/build_bubble_templates.py), [tools/diag_roi_centers.py](../tools/diag_roi_centers.py), [tools/diag_roi_size.py](../tools/diag_roi_size.py) to use SlotMap instead of removed functions.
+
+### Previous Additions and New Features
+
+- Added `lattice_slot_centers()`, `lattice_row_centers()`, and `lattice_choice_centers()` to [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). These functions return slot centers derived entirely from timing-mark lattice data (top footprint x0 + column index * fine step for x, left question marks center_y for y). No YAML `choice_x` normalized coordinates are consulted.
+- Added `lattice_roi_bounds()` to [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Computes asymmetric ROI boundaries from midpoints between neighboring lattice centers. Edge choices (A/E) and edge rows (first/last) extrapolate from the nearest interior gap. Replaces symmetric `_default_bounds()` construction.
+- Added `_lattice_bounds_at_center()` helper to [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Preserves asymmetric lattice ROI sizing while allowing refined (shifted) center positions.
+- Added `draw_lattice_centers_debug()` to [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Draws green dots at every lattice-derived slot center with Q1/Q51 labels for visual verification.
+- Added base template bootstrap in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). `try_load_bubble_templates()` now falls back to `artifacts/base_letter_template.png` for any letter missing a per-letter auto-built template. Per-letter templates in `config/bubble_templates/` take priority when present.
+
+### Behavior or Interface Changes
+
+- `_stage_localize_rows()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) now uses `lattice_slot_centers()` as sole source of slot placement. Returns `(raw_data, lattice_ctx)` tuple instead of bare `raw_data` list.
+- Bubble ROI x-centers in `_stage_localize_rows()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) are now derived from the timing-mark lattice (`fp_x0 + col_idx * fine_step`) instead of YAML normalized coordinates. Integer `choice_columns` in the YAML define which column in the 53-column grid each choice maps to, eliminating fractional placements that landed between grid lines.
+- All ROI bound computations throughout the bubble reading pipeline now use lattice-derived asymmetric bounds instead of symmetric K-constant half_width/half_height construction.
+- `_refine_bubble_edges_y()` and `_refine_bubble_edges_x()` now accept optional `default_top`/`default_bot` and `default_left`/`default_right` parameters for caller-supplied fallback bounds.
+- `_validate_bubble_rect()` now accepts optional `fallback_bounds` parameter.
+- `_select_rect_by_bracket_signal()` now accepts optional `lattice_bounds` parameter.
+- [config/dl1200_template.yaml](../config/dl1200_template.yaml): removed `choice_x` normalized coordinate mappings from both left and right columns. Lattice-based placement uses `choice_columns` integer indices exclusively. Template loader derives `choice_x` from `choice_columns` when needed for backward compatibility.
+- `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) now stores `top_fp_x0` (lattice origin) and `top_col_ratio` (integer footprint-to-fine ratio) in the transform dict for downstream lattice-based center derivation.
+- Added `choice_columns` mappings to left and right column sections in [config/dl1200_template.yaml](../config/dl1200_template.yaml) - integer column indices (A=5/24, B=8/27, C=10/30, D=13/33, E=16/36) in the 53-column top timing mark grid.
+
+### Removals and Deprecations
+
+- Removed `_default_bounds()` from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) and [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). All ROI placement now uses `lattice_roi_bounds()` or `_lattice_bounds_at_center()`. Debug drawing uses `_geom_bounds()` for display-only fallbacks.
+- Removed `compute_choice_half_widths()`, `compute_row_half_heights()`, and `_compute_column_row_half_heights()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). The timing-mark grid is regular so symmetric `col_pitch/2` and `row_pitch/2` half-dimensions suffice; Voronoi-style asymmetric boundaries were over-engineered.
+- Simplified `extract_roi_1x()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py): removed `half_w_left`, `half_w_right`, `half_h_top`, `half_h_bottom` parameters; now uses symmetric half-widths from geom dict.
+- Simplified ROI extraction in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py): removed Voronoi half-width/half-height computation, now calls `extract_roi_1x()` with just geom.
+
+### Fixes and Maintenance
+
+- Fixed bubble template ROI capturing two slots instead of one: `top_col_spacing` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) was storing the coarse footprint mark spacing (~104 px) instead of the fine template-column step (~35 px). The footprint detector correctly identifies coarse marks, but the fine-grid step is what downstream bubble geometry needs. Now derives `fine_col_step = fp_spacing / round(col_ratio)` before storing.
+- Removed pixel fallback branch from `anchor_geom()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Now raises `ValueError` when anchor-derived spacing is unavailable instead of silently using hardcoded pixel defaults. All runtime geometry is expressed as dimensionless fractions of anchor-derived spacing.
+- Updated `read_student_id()` and `read_student_id_detailed()` in [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py) to accept a `transform` parameter instead of calling `anchor_geom({})` with empty dict.
+- Updated [run_pipeline.py](../run_pipeline.py) to always compute timing mark transform (not just in debug mode), so student ID reader has valid anchor-derived geometry.
+- Fixed float-to-int conversion error in `draw_answer_debug()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) for template shift line/circle drawing.
+- Updated [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) to catch `ValueError` from `anchor_geom()` and skip scans with invalid timing marks instead of crashing.
+
+### Decisions and Failures
+
+- Root cause of two-slot ROIs: the footprint model's `_approx_gcd_spacing()` correctly finds the coarse mark spacing, but the coarse marks in Row-1 are spaced at every Nth fine-grid column. The fine-grid marks are not present in Row-1 data, so no GCD trick can recover the fine step. The fix is semantic: store the fine template-column step (derived from `fp_spacing / round(col_ratio)`) rather than the raw footprint spacing.
+
+### Additions and New Features
+
+- Added offline bubble template construction pipeline in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py): `extract_roi_1x()` for native-resolution ROI extraction, `_find_medoid_roi()` for selecting most representative ROI, `_align_roi_to_reference()` for translation-only NCC alignment, `_apply_symmetry_augmentation()` for letter-specific mirroring (A=LR, B-E=TB), `_build_letter_template()` for aligned averaging with outlier rejection, `_generate_template_mask()` for bracket-emphasis mask derivation
+- New `load_templates_and_masks()` and `save_templates_and_masks()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) for loading/saving template + mask file pairs (`{letter}.png` and `{letter}_mask.png`)
+- New `_save_qc_montage()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) generates multi-panel QC images showing original ROIs with kept/rejected borders, plus final template and mask
+- Added masked NCC matching in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py): `match_bubble_masked()` applies bracket-emphasis mask to template before correlation, uses `TM_CCORR_NORMED` with mask parameter, returns 5-tuple with subpixel-refined position and shift values
+- New `_subpixel_peak()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py) fits quadratic to 3x3 NCC neighborhood for fractional peak estimation, clamped to +/-0.5px
+- Created [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) offline side script: two-pass pipeline (ROI extraction + template construction) from scanned images, accepts `--input-dir`, `--output-dir`, `--template`, and `--dry-run` flags
+- Added confidence tier visualization in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py): small colored dots at bubble corners indicate refinement confidence (green >= 0.6, yellow 0.3-0.6, red < 0.3)
+- Created [tests/test_template_matcher.py](../tests/test_template_matcher.py) with 8 tests covering subpixel peak refinement, masked NCC matching, out-of-bounds handling, mask parameter threading, and return type verification
+- Created [tests/test_bubble_template_extractor.py](../tests/test_bubble_template_extractor.py) with 23 tests covering ROI extraction, medoid selection, alignment, symmetry augmentation (LR and TB), template building, mask generation, patch quality scoring, template/mask loading, and anchor geometry derivation
+- New `anchor_geom(transform)` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) derives all bubble slot geometry from anchor-measured timing spacing using dimensionless fractions (`_K_HALF_HEIGHT`, `_K_HALF_WIDTH`, etc.); replaces fixed pixel assumptions with scale-invariant ratios of row_pitch and col_pitch
+- `CANONICAL_TEMPLATE_WIDTH` and `CANONICAL_TEMPLATE_HEIGHT` constants in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) define the fixed high-resolution grid (480x88) for offline templates; runtime scaling always goes DOWN from this canonical size
+- `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) now stores `top_col_spacing` in the transform dict, exposing the top footprint column spacing for downstream geometry derivation
+
+### Fixes and Maintenance
+
+- Fixed `_sanitize_anchor_transform()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) stripping `left_s_q` and `top_col_spacing` keys from the transform dict, which caused `anchor_geom()` to always fall back to fixed defaults. These timing-mark spacing keys are now passed through.
+- Fixed float-to-int slice errors in `_compute_bracket_edge_mean()` and `_compute_dual_zone_means()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py); anchor-derived geometry produces float values that need explicit `int()` casts before numpy array slicing.
+
+### Behavior or Interface Changes
+
+- `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) now computes geometry via `anchor_geom(transform)` instead of `default_geom()`; bubble dimensions scale with timing-mark spacing rather than using hardcoded pixel values. Falls back to fixed defaults when anchor spacing is unavailable.
+- Removed `default_geom()` from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py); its fixed-pixel fallback values are now inlined in `anchor_geom()`. All callers (`score_bubble_fast`, `student_id_reader`, `debug_drawing`, `bubble_template_extractor`) updated to use `anchor_geom()`.
+- `draw_answer_debug()`, `draw_scored_overlay()`, and `draw_combined_debug()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) now require a `geom` parameter instead of hardcoding geometry.
+- `extract_letter_templates()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) now requires a `geom` parameter.
+- [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) now computes anchor geometry from timing marks for each scan, so ROI extraction uses the correct per-scan bubble dimensions.
+- `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) now upscales all aligned ROIs to canonical high resolution (480x88) before averaging, so master templates are always higher-res than any individual source scan
+- `scale_template_to_bubble()` docstring updated to reflect canonical-template-to-local-slot scaling design; target dimensions now come from anchor-derived geometry when available
+- `try_load_bubble_templates()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py) now returns `(templates_dict, masks_dict)` tuple instead of a plain dict; callers must destructure the return value
+- `refine_row_by_template()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py) accepts optional `masks` parameter; when provided, uses masked NCC (`match_bubble_masked()`) instead of unmasked `match_bubble_local()`
+- `_stage_template_refine()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) accepts optional `bubble_masks` parameter and stores `refinement_confidence` per choice in raw_data
+- `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) accepts optional `bubble_masks` parameter; auto-loads masks alongside templates when not provided
+
 - Replaced legacy single-linear left-side timing detection with piecewise 3-segment structural fitter (2 top + 10 ID + 50 question = 62 marks) in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py)
 - New `_extract_left_candidates()` extracts dash-like candidates from the left strip using Otsu + morphology with relative area thresholds
 - New `_build_left_vertical_family()` filters candidates to a single dominant vertical column by x-center consistency and height similarity

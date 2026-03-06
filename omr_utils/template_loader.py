@@ -107,7 +107,17 @@ def _ensure_mark_indices(template: dict) -> None:
 		row_spacing = col["question_spacing_y"] / left_step
 		# convert each choice x-coordinate to top mark index
 		choice_indices = {}
-		for letter, norm_x in col["choice_x"].items():
+		choice_x = col.get("choice_x", {})
+		if not choice_x and "choice_columns" in col:
+			# derive choice_x from integer column indices
+			for letter, col_idx in col["choice_columns"].items():
+				norm_x = omr_utils.timing_mark_anchors.mark_index_to_normalized(
+					float(col_idx),
+					top_edge["start_x"], top_edge["end_x"],
+					top_edge["expected_count"])
+				choice_x[letter] = round(norm_x, 6)
+			col["choice_x"] = choice_x
+		for letter, norm_x in choice_x.items():
 			idx = omr_utils.timing_mark_anchors.normalized_to_mark_index(
 				norm_x,
 				top_edge["start_x"], top_edge["end_x"],

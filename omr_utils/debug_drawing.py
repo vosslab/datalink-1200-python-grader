@@ -5,86 +5,18 @@ import cv2
 import numpy
 
 # local repo modules
-import omr_utils.bubble_reader
-import omr_utils.template_loader
+import omr_utils.slot_map
 import omr_utils.timing_mark_anchors
 
 
 #============================================
-def _compute_refinement_shift_data(results: list, template: dict,
-	width: int, height: int, local_similarity_px: float = 2.5) -> dict:
-	"""Compute template->refined shift vectors and local similarity flags.
-
-	Returns:
-		dict keyed by (question, choice) with:
-		- template: (tx, ty)
-		- refined: (rx, ry)
-		- dx, dy
-		- local_dev
-		- local_ok
-	"""
-	choices = template["answers"]["choices"]
-	left_range = template["answers"]["left_column"]["question_range"]
-	right_range = template["answers"]["right_column"]["question_range"]
-	shift_data = {}
-	for entry in results:
-		q_num = entry["question"]
-		positions = entry.get("positions", {})
-		for choice in choices:
-			norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
-				template, q_num, choice)
-			tx, ty = omr_utils.template_loader.to_pixels(
-				norm_x, norm_y, width, height)
-			rx, ry = positions.get(choice, (tx, ty))
-			dx = rx - tx
-			dy = ry - ty
-			shift_data[(q_num, choice)] = {
-				"template": (tx, ty),
-				"refined": (rx, ry),
-				"dx": dx,
-				"dy": dy,
-				"local_dev": 0.0,
-				"local_ok": True,
-			}
-	for entry in results:
-		q_num = entry["question"]
-		if left_range[0] <= q_num <= left_range[1]:
-			col_min = left_range[0]
-			col_max = left_range[1]
-		else:
-			col_min = right_range[0]
-			col_max = right_range[1]
-		for choice in choices:
-			key = (q_num, choice)
-			current = shift_data[key]
-			neighbors = []
-			for delta in [-2, -1, 1, 2]:
-				n_q = q_num + delta
-				if n_q < col_min or n_q > col_max:
-					continue
-				n_key = (n_q, choice)
-				if n_key in shift_data:
-					neighbors.append(shift_data[n_key])
-			if not neighbors:
-				continue
-			n_dx = [n["dx"] for n in neighbors]
-			n_dy = [n["dy"] for n in neighbors]
-			med_dx = float(numpy.median(n_dx))
-			med_dy = float(numpy.median(n_dy))
-			dev = ((current["dx"] - med_dx) ** 2 + (current["dy"] - med_dy) ** 2) ** 0.5
-			current["local_dev"] = float(dev)
-			current["local_ok"] = bool(dev <= local_similarity_px)
-	return shift_data
-
-
-#============================================
-def _default_bounds(cx: int, cy: int, geom: dict) -> tuple:
-	"""Compute integer pixel bounds from float geometry values.
+def _geom_bounds(cx: int, cy: int, geom: dict) -> tuple:
+	"""Compute integer pixel bounds from geom half dimensions.
 
 	Args:
 		cx: bubble center x in pixels
 		cy: bubble center y in pixels
-		geom: pixel geometry dict (may contain float values)
+		geom: pixel geometry dict with half_width and half_height
 
 	Returns:
 		tuple of (top_y, bot_y, left_x, right_x) as integers
@@ -98,7 +30,7 @@ def _default_bounds(cx: int, cy: int, geom: dict) -> tuple:
 
 #============================================
 def draw_answer_debug(image: numpy.ndarray, template: dict,
-	results: list, show_refine_shifts: bool = True) -> numpy.ndarray:
+	results: list, geom: dict, show_refine_shifts: bool = True) -> numpy.ndarray:
 	"""Draw color-coded rectangular bubble overlay on a registered image.
 
 	Uses semi-transparent filled rectangles so every detection zone is
@@ -108,8 +40,6 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 	- Teal filled strips = measurement zones (left and right of center)
 	- Orange outline = center exclusion zone (printed letter area)
 	- Status color outline = outer bubble border (green/red/yellow/gray)
-	- Optional shift lines = template center to refined center; red when
-	  local-neighbor shift similarity is poor
 
 	Alpha blending (~0.3) keeps the underlying scantron image visible.
 
@@ -117,7 +47,8 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 		image: BGR registered image
 		template: loaded template dictionary
 		results: list of answer dicts from read_answers
-		show_refine_shifts: draw refinement shift vectors when True
+		geom: pixel geometry dict from slot_map.geom()
+		show_refine_shifts: unused, kept for API compatibility
 
 	Returns:
 		annotated copy of the image
@@ -127,94 +58,62 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 	overlay = debug.copy()
 	h, w = debug.shape[:2]
 	choices = template["answers"]["choices"]
-	# get geometry for fallback and center exclusion
-	geom = omr_utils.bubble_reader.default_geom()
-	shift_data = {}
-	if show_refine_shifts:
-		shift_data = _compute_refinement_shift_data(results, template, w, h)
-	# int-cast geom values for cv2.rectangle drawing
-	ce = int(geom["center_exclusion"])
-	mi_v = int(geom["measurement_inset_v"])
-	mi_h = int(geom["measurement_inset_h"])
+	# use provided geometry for center exclusion and measurement insets
+	ce = geom["center_exclusion"]
+	mi_v = geom["measurement_inset_v"]
+	mi_h = geom["measurement_inset_h"]
 	# define zone colors (BGR)
 	teal = (200, 128, 0)
 	orange = (0, 165, 255)
 	alpha = 0.3
 	for entry in results:
-		q_num = entry["question"]
 		positions = entry.get("positions", {})
 		edges = entry.get("edges", {})
 		for choice in choices:
-			# use refined positions from read_answers if available
-			if choice in positions:
-				px, py = positions[choice]
-			else:
-				# fallback: recompute from template
-				norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
-					template, q_num, choice)
-				px, py = omr_utils.template_loader.to_pixels(
-					norm_x, norm_y, w, h)
+			# use positions from read_answers results
+			if choice not in positions:
+				continue
+			px, py = positions[choice]
 			# get detected edges for this bubble
 			if choice in edges:
 				top_y, bot_y, left_x, right_x = edges[choice]
 			else:
 				# fallback to geometry-based defaults
-				top_y, bot_y, left_x, right_x = _default_bounds(px, py, geom)
+				top_y, bot_y, left_x, right_x = _geom_bounds(px, py, geom)
 			# -- layer 1: teal filled measurement strips (alpha blended) --
 			# matches _compute_edge_mean: inset from detected edges
 			# left measurement strip
 			cv2.rectangle(overlay,
-				(left_x + mi_h, top_y + mi_v),
-				(px - ce, bot_y - mi_v),
+				(int(left_x + mi_h), int(top_y + mi_v)),
+				(int(px - ce), int(bot_y - mi_v)),
 				teal, -1)
 			# right measurement strip
 			cv2.rectangle(overlay,
-				(px + ce, top_y + mi_v),
-				(right_x - mi_h, bot_y - mi_v),
+				(int(px + ce), int(top_y + mi_v)),
+				(int(right_x - mi_h), int(bot_y - mi_v)),
 				teal, -1)
 	# blend the filled overlay onto the debug image
 	cv2.addWeighted(overlay, alpha, debug, 1.0 - alpha, 0, debug)
 	# draw outlines on top of the blended image (no alpha needed)
 	for entry in results:
-		q_num = entry["question"]
 		answer = entry["answer"]
 		flags = entry["flags"]
 		scores = entry["scores"]
 		positions = entry.get("positions", {})
 		edges = entry.get("edges", {})
 		for choice in choices:
-			if choice in positions:
-				px, py = positions[choice]
-			else:
-				norm_x, norm_y = omr_utils.template_loader.get_bubble_coords(
-					template, q_num, choice)
-				px, py = omr_utils.template_loader.to_pixels(
-					norm_x, norm_y, w, h)
+			if choice not in positions:
+				continue
+			px, py = positions[choice]
 			# get detected edges for this bubble
 			if choice in edges:
 				top_y, bot_y, left_x, right_x = edges[choice]
 			else:
-				top_y, bot_y, left_x, right_x = _default_bounds(px, py, geom)
-			# optional refinement-shift line for second-pass diagnostics
-			if show_refine_shifts:
-				shift_key = (q_num, choice)
-				if shift_key in shift_data:
-					sd = shift_data[shift_key]
-					start_pt = sd["template"]
-					end_pt = sd["refined"]
-					dx = sd["dx"]
-					dy = sd["dy"]
-					if dx != 0 or dy != 0:
-						if sd["local_ok"]:
-							shift_color = (80, 200, 80)
-						else:
-							shift_color = (0, 0, 255)
-						cv2.line(debug, start_pt, end_pt, shift_color, 1)
-						cv2.circle(debug, start_pt, 1, shift_color, -1)
+				top_y, bot_y, left_x, right_x = _geom_bounds(px, py, geom)
 			# -- layer 3: orange center exclusion outline --
 			cv2.rectangle(debug,
-				(px - ce, top_y),
-				(px + ce, bot_y),
+				(int(px - ce), int(top_y)),
+				(int(px + ce), int(bot_y)),
 				orange, 1)
 			# -- layer 4: status-colored outer bubble outline --
 			if choice == answer and "MULTIPLE" not in flags:
@@ -234,22 +133,39 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 				status_color = (0, 0, 200)
 				thickness = 1
 			cv2.rectangle(debug,
-				(left_x, top_y),
-				(right_x, bot_y),
+				(int(left_x), int(top_y)),
+				(int(right_x), int(bot_y)),
 				status_color, thickness)
 			# draw score text for high scores
 			if scores[choice] > 0.10:
 				score_text = f"{scores[choice]:.2f}"
 				cv2.putText(debug, score_text,
-					(px - 12, top_y - 2),
+					(int(px) - 12, int(top_y) - 2),
 					cv2.FONT_HERSHEY_SIMPLEX, 0.25,
 					status_color, 1)
+			# template refinement confidence tier indicator
+			ref_conf = entry.get("refinement_confidence", {})
+			if isinstance(ref_conf, dict):
+				conf_val = ref_conf.get(choice, -1.0)
+			else:
+				conf_val = -1.0
+			if conf_val >= 0.0:
+				# pick tier color
+				if conf_val >= 0.6:
+					tier_color = (0, 200, 0)
+				elif conf_val >= 0.3:
+					tier_color = (0, 200, 200)
+				else:
+					tier_color = (0, 0, 200)
+				# small dot at bottom-right corner of bubble
+				cv2.circle(debug, (int(right_x) - 2, int(bot_y) - 2),
+					2, tier_color, -1)
 	return debug
 
 
 #============================================
 def draw_scored_overlay(image: numpy.ndarray, template: dict,
-	results: list) -> numpy.ndarray:
+	results: list, geom: dict) -> numpy.ndarray:
 	"""Draw minimal scoring overlay showing bubble status and confidence.
 
 	Shows filled/unfilled determination with confidence scores.
@@ -259,31 +175,77 @@ def draw_scored_overlay(image: numpy.ndarray, template: dict,
 		image: BGR registered image
 		template: loaded template dictionary
 		results: list of answer dicts from read_answers
+		geom: pixel geometry dict from slot_map.geom()
 
 	Returns:
 		annotated copy of the image
 	"""
 	# reuse existing answer debug without shift vectors for cleaner output
-	scored = draw_answer_debug(image, template, results,
+	scored = draw_answer_debug(image, template, results, geom,
 		show_refine_shifts=False)
 	return scored
 
 
 #============================================
+def draw_lattice_crosshairs(image: numpy.ndarray,
+	slot_map: "omr_utils.slot_map.SlotMap",
+	template: dict) -> numpy.ndarray:
+	"""Draw small crosshairs at every SlotMap.center() position.
+
+	No ROIs, no measurement zones. Just lattice intersections.
+	Verifies geometry independently of measurement logic. If crosses
+	land on printed bubble centers, the geometry layer is correct.
+
+	Args:
+		image: BGR image
+		slot_map: SlotMap instance
+		template: loaded template dictionary
+
+	Returns:
+		annotated copy of the image
+	"""
+	debug = image.copy()
+	answers = template["answers"]
+	num_q = answers["num_questions"]
+	choices = answers["choices"]
+	green = (0, 220, 0)
+	cyan = (220, 220, 0)
+	# crosshair arm length in pixels
+	arm = 4
+	for q_num in range(1, num_q + 1):
+		for choice in choices:
+			cx, cy = slot_map.center(q_num, choice)
+			# draw small crosshair
+			cv2.line(debug, (cx - arm, cy), (cx + arm, cy), green, 1)
+			cv2.line(debug, (cx, cy - arm), (cx, cy + arm), green, 1)
+		# label first row of each column for orientation
+		if q_num == 1:
+			cx, cy = slot_map.center(1, "A")
+			cv2.putText(debug, "Q1", (cx - 10, cy - 8),
+				cv2.FONT_HERSHEY_SIMPLEX, 0.3, cyan, 1)
+		elif q_num == 51:
+			cx, cy = slot_map.center(51, "A")
+			cv2.putText(debug, "Q51", (cx - 12, cy - 8),
+				cv2.FONT_HERSHEY_SIMPLEX, 0.3, cyan, 1)
+	return debug
+
+
+#============================================
 def draw_combined_debug(image: numpy.ndarray, template: dict,
-	transform: dict, results: list) -> numpy.ndarray:
+	transform: dict, results: list, geom: dict) -> numpy.ndarray:
 	"""Draw combined debug overlay with all diagnostic layers.
 
 	Layers (bottom to top):
 	1. Timing mark candidates with cluster colors (search strips)
 	2. Final timing marks with guide lines
-	3. Bubble outlines with detection zones and shift vectors
+	3. Bubble outlines with detection zones
 
 	Args:
 		image: BGR registered image
 		template: loaded template dictionary
 		transform: dict from estimate_anchor_transform
 		results: list of answer dicts from read_answers
+		geom: pixel geometry dict from slot_map.geom()
 
 	Returns:
 		annotated copy with all debug layers combined
@@ -294,7 +256,7 @@ def draw_combined_debug(image: numpy.ndarray, template: dict,
 	# overlay final timing marks and guide lines on top
 	debug = omr_utils.timing_mark_anchors.draw_timing_mark_debug(
 		debug, transform)
-	# overlay answer bubbles with detection zones and shift vectors
-	debug = draw_answer_debug(debug, template, results,
-		show_refine_shifts=True)
+	# overlay answer bubbles with detection zones
+	debug = draw_answer_debug(debug, template, results, geom,
+		show_refine_shifts=False)
 	return debug

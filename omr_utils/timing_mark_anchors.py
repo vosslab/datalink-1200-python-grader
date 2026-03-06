@@ -1237,6 +1237,9 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 	transform["top_marks"] = []
 	transform["top_raw_candidates"] = []
 	transform["top_row2_marks"] = []
+	transform["top_col_spacing"] = 0.0
+	transform["top_fp_x0"] = 0.0
+	transform["top_col_ratio"] = 0
 	transform["left_strip_region"] = (0, 0, 0, 0)
 	transform["top_strip_region"] = (0, 0, 0, 0)
 	timing = template.get("timing_marks", {})
@@ -1371,6 +1374,16 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 				# map each mark to its column in the 53-column grid
 				# using the footprint model's spacing/origin
 				col_ratio = fp_spacing / max(1.0, exp_step)
+				# derive the fine template-column step from the
+				# measured footprint spacing; fp_spacing is the coarse
+				# mark spacing (every Nth column), so divide by the
+				# rounded integer ratio to recover the fine grid step
+				fine_col_step = fp_spacing / max(1.0, round(col_ratio))
+				# store fine column spacing for downstream bubble geometry
+				transform["top_col_spacing"] = float(fine_col_step)
+				# store lattice origin and integer ratio for lattice-based centers
+				transform["top_fp_x0"] = float(fp_x0)
+				transform["top_col_ratio"] = int(round(col_ratio))
 				if col_ratio >= 1.0:
 					mapped_centers = []
 					for cx in top_centers:

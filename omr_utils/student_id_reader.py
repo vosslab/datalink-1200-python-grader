@@ -4,12 +4,14 @@
 import cv2
 
 # local repo modules
+import omr_utils.slot_map
 import omr_utils.template_loader
 import omr_utils.bubble_reader
 
 
 #============================================
-def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
+def read_student_id(image, template: dict, transform: dict,
+	threshold: float = 0.05) -> str:
 	"""Read the student ID from the bubble grid.
 
 	Each of 9 digit positions has 10 bubbles (0-9).
@@ -19,6 +21,7 @@ def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
 	Args:
 		image: BGR registered image (numpy array)
 		template: loaded template dictionary
+		transform: anchor transform dict with timing-mark spacing
 		threshold: minimum score to consider a bubble filled
 
 	Returns:
@@ -30,8 +33,8 @@ def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
 	sid_config = template["student_id"]
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
-	# get bubble geometry scaled to this image size
-	geom = omr_utils.bubble_reader.default_geom()
+	# get bubble geometry from anchor-derived spacing
+	geom = omr_utils.slot_map.SlotMap(transform, template).geom()
 	digits = []
 	for d in range(num_digits):
 		best_value = 0
@@ -55,13 +58,14 @@ def read_student_id(image, template: dict, threshold: float = 0.05) -> str:
 
 
 #============================================
-def read_student_id_detailed(image, template: dict,
+def read_student_id_detailed(image, template: dict, transform: dict,
 	threshold: float = 0.05) -> dict:
 	"""Read student ID with detailed per-digit scoring information.
 
 	Args:
 		image: BGR registered image (numpy array)
 		template: loaded template dictionary
+		transform: anchor transform dict with timing-mark spacing
 		threshold: minimum score to consider a bubble filled
 
 	Returns:
@@ -74,8 +78,8 @@ def read_student_id_detailed(image, template: dict,
 	sid_config = template["student_id"]
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
-	# get bubble geometry scaled to this image size
-	geom = omr_utils.bubble_reader.default_geom()
+	# get bubble geometry from anchor-derived spacing
+	geom = omr_utils.slot_map.SlotMap(transform, template).geom()
 	digit_details = []
 	id_string = ""
 	for d in range(num_digits):
