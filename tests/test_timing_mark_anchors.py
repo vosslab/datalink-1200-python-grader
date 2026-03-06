@@ -5,6 +5,8 @@ import numpy
 
 # local repo modules
 import omr_utils.timing_mark_anchors
+import omr_utils.timing_marks_left
+import omr_utils.timing_marks_top
 
 
 #============================================
@@ -378,7 +380,7 @@ class TestLeftFootprint:
 		for i in range(10):
 			y = 20 + i * 45
 			strip[y - 3:y + 3, 10:50] = 0
-		candidates = omr_utils.timing_mark_anchors._extract_left_candidates(
+		candidates = omr_utils.timing_marks_left._extract_left_candidates(
 			strip)
 		assert len(candidates) >= 8
 		# candidates should be sorted by center_y
@@ -412,7 +414,7 @@ class TestLeftFootprint:
 				"fill_ratio": 0.8,
 				"bbox": (85, 60 + i * 50 - 2, 30, 5),
 			})
-		family = omr_utils.timing_mark_anchors._build_left_vertical_family(
+		family = omr_utils.timing_marks_left._build_left_vertical_family(
 			candidates)
 		# outliers should be filtered out
 		assert len(family) == 20
@@ -426,7 +428,7 @@ class TestLeftFootprint:
 			{"center_y": 55.0},
 		]
 		predictions = [11.0, 24.0, 41.0, 54.0]
-		matches = omr_utils.timing_mark_anchors._match_predictions_to_marks_y(
+		matches = omr_utils.timing_marks_left._match_predictions_to_marks_y(
 			predictions, marks, match_tol=5.0)
 		assert len(matches) == 4
 		# verify each prediction matched the correct mark
@@ -449,15 +451,15 @@ class TestLeftFootprint:
 		assert len(expected_ys) == 62
 		# extract candidates
 		strip = gray[:, 0:60]
-		candidates = omr_utils.timing_mark_anchors._extract_left_candidates(
+		candidates = omr_utils.timing_marks_left._extract_left_candidates(
 			strip)
 		assert len(candidates) >= 50
 		# build family
-		family = omr_utils.timing_mark_anchors._build_left_vertical_family(
+		family = omr_utils.timing_marks_left._build_left_vertical_family(
 			candidates)
 		assert len(family) >= 50
 		# fit footprint
-		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		result = omr_utils.timing_marks_left._fit_left_footprint(family)
 		assert result is not None
 		assert result["score"] > 0.0
 		assert result["n_matched"] >= 50
@@ -513,11 +515,11 @@ class TestLeftFootprint:
 			n_top=2, n_id=10, n_q=50,
 			gap_a=gap_a, gap_b=gap_b)
 		strip = gray[:, 0:60]
-		candidates = omr_utils.timing_mark_anchors._extract_left_candidates(
+		candidates = omr_utils.timing_marks_left._extract_left_candidates(
 			strip)
-		family = omr_utils.timing_mark_anchors._build_left_vertical_family(
+		family = omr_utils.timing_marks_left._build_left_vertical_family(
 			candidates)
-		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		result = omr_utils.timing_marks_left._fit_left_footprint(family)
 		assert result is not None
 		q_marks = result["question_marks"]
 		assert len(q_marks) == 50
@@ -538,7 +540,7 @@ class TestLeftFootprint:
 				"area": 150,
 				"bbox": (15, 50 + i * 20, 30, 5),
 			})
-		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		result = omr_utils.timing_marks_left._fit_left_footprint(family)
 		assert result is None
 
 	def test_uniform_marks_fail_structural_fit(self) -> None:
@@ -554,7 +556,7 @@ class TestLeftFootprint:
 				"area": 150,
 				"bbox": (15, 50 + i * 20, 30, 5),
 			})
-		result = omr_utils.timing_mark_anchors._fit_left_footprint(family)
+		result = omr_utils.timing_marks_left._fit_left_footprint(family)
 		# should fail (return None) or have zero score
 		if result is not None:
 			assert result["score"] == 0.0
@@ -564,6 +566,6 @@ class TestLeftFootprint:
 		# 61 predictions instead of 62
 		predictions = [float(i * 20) for i in range(61)]
 		family = [{"center_y": float(i * 20)} for i in range(61)]
-		result = omr_utils.timing_mark_anchors._score_left_footprint(
+		result = omr_utils.timing_marks_left._score_left_footprint(
 			predictions, family, s_id=20.0, s_q=20.0)
 		assert result["score"] == 0.0

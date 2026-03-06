@@ -4,6 +4,25 @@
 
 ### Additions and New Features
 
+- Added `extract_roi_from_bounds()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Bounds-based ROI extraction primitive that accepts explicit lattice bounds from `SlotMap.roi_bounds()`, adds proportional padding, clips to image edges. Replaces center+geom symmetric cropping.
+- Created [omr_utils/timing_marks_left.py](../omr_utils/timing_marks_left.py) with 6 left-side timing mark detection functions extracted from `timing_mark_anchors.py`.
+- Created [omr_utils/timing_marks_top.py](../omr_utils/timing_marks_top.py) with 6 top-side timing mark detection functions extracted from `timing_mark_anchors.py`.
+
+### Behavior or Interface Changes
+
+- `_extract_rois_from_scan()` in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) no longer calls `read_answers()`. Extraction iterates all 100 questions x 5 choices directly via `SlotMap.roi_bounds()`, removing the empty-only sampling policy. Expected yield increases from ~37 ROIs/scan to ~500 ROIs/scan.
+- [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) ROI extraction now uses `SlotMap.roi_bounds()` + `extract_roi_from_bounds()` instead of center+geom symmetric `extract_roi_1x()`. ROIs now respect lattice cell boundaries.
+- [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) split into three files: shared utilities remain in the main module, left-specific detection moved to `timing_marks_left.py`, top-specific detection moved to `timing_marks_top.py`. Pure code motion, no behavioral changes.
+
+### Removals and Deprecations
+
+- Removed `import omr_utils.bubble_reader` from [tools/build_bubble_templates.py](../tools/build_bubble_templates.py). Template extraction no longer depends on the answer-reading pipeline.
+- Deleted `extract_roi_1x()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Replaced by `extract_roi_from_bounds()` which uses lattice bounds instead of center+geom symmetric cropping.
+- Deleted `extract_bubble_patch()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Dead code, only called by removed `extract_letter_templates()`.
+- Deleted `extract_letter_templates()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Dead code with zero external callers.
+
+### Previous Additions and New Features
+
 - Created [omr_utils/slot_map.py](../omr_utils/slot_map.py) with `SlotMap` class as the single geometry authority for bubble slot positions. Builds pixel coordinates directly from timing mark anchors: row y from `left_question_marks`, column x from `top_fp_x0 + choice_columns * fine_step`. Provides `center()`, `row_center()`, `choice_center()`, `roi_bounds()`, and `geom()` methods.
 - Added `draw_lattice_crosshairs()` to [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Draws small crosshairs at every `SlotMap.center()` position for independent geometry verification. Saved as `{base_name}_lattice.png` in debug mode.
 
@@ -25,6 +44,7 @@
 
 ### Decisions and Failures
 
+- Previous extraction only harvested EMPTY bubbles from `read_answers()` output, applying five cascading filters (MULTIPLE skip, empty-only, fill < 0.12, position check, quality > 10.0) that reduced 500 potential slots to ~37 per scan. Template extraction should sample ALL slots because the printed bracket shape is independent of fill state.
 - Architecture decision: SlotMap is the single source of truth for all bubble geometry. No YAML coordinates, no affine correction, no Sobel y-refinement for initial placement. Local x-edge refinement within the lattice ROI is still performed for precise measurement zones.
 - The affine fit from confident Sobel detections (`_fit_affine_from_confident_detections()`) was the core contamination source that caused 0/99 correct results. It overwrote all positions with YAML-derived predictions, defeating the lattice-based placement.
 

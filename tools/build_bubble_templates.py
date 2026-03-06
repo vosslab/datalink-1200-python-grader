@@ -3,7 +3,7 @@
 
 Two-pass pipeline:
   Pass 1 - ROI extraction: load each scan, run anchor transform and
-    read_answers, extract empty bubble ROIs grouped by letter (A-E).
+    SlotMap to extract all bubble ROIs grouped by letter (A-E).
   Pass 2 - Template construction: align ROIs, reject outliers, build
     averaged templates with bracket-emphasis masks.
 
@@ -23,7 +23,6 @@ import argparse
 import cv2
 
 # local repo modules
-import omr_utils.bubble_reader
 import omr_utils.bubble_template_extractor
 import omr_utils.slot_map
 import omr_utils.template_loader
@@ -80,7 +79,12 @@ def _find_scan_images(input_dir: str) -> list:
 #============================================
 def _extract_rois_from_scan(image_path: str, template: dict,
 	output_dir: str, metadata: list) -> dict:
-	"""Extract empty bubble ROIs from a single scan image.
+	"""Extract bubble ROIs from all slots in a single scan image.
+
+	Iterates all question/choice slots via SlotMap directly, without
+	filtering by fill state. The printed bracket shape is independent
+	of whether a bubble is filled, so all slots are valid for template
+	construction.
 
 	Args:
 		image_path: path to the scan image
@@ -110,44 +114,30 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 		return {}
 	print(f"    anchor geometry: row_pitch={geom['row_pitch']:.1f}px"
 		f" col_pitch={geom['col_pitch']:.1f}px")
-	# run the full pipeline to get positions and scores
-	results = omr_utils.bubble_reader.read_answers(image, template)
+	# iterate all question/choice slots directly via SlotMap
 	choices = template["answers"]["choices"]
+	num_questions = int(template["answers"]["num_questions"])
 	rois_by_letter = {c: [] for c in choices}
-	for entry in results:
-		q_num = entry["question"]
-		answer = entry.get("answer", "")
-		flags = entry.get("flags", "")
-		scores = entry.get("scores", {})
-		positions = entry.get("positions", {})
-		# skip unreliable rows
-		if "MULTIPLE" in flags:
-			continue
+	# diagnostic counters
+	attempted = 0
+	extracted = 0
+	skipped_bounds = 0
+	skipped_quality = 0
+	for q_num in range(1, num_questions + 1):
 		for choice in choices:
-			# only extract from empty bubbles
-			is_empty = False
-			if flags == "BLANK":
-				is_empty = True
-			elif answer and choice != answer:
-				is_empty = True
-			if not is_empty:
-				continue
-			# check fill score is low (empty)
-			score = float(scores.get(choice, 1.0))
-			if score > 0.12:
-				continue
-			if choice not in positions:
-				continue
-			px, py = positions[choice]
-			# extract 1X ROI with symmetric grid cell dimensions
-			roi = omr_utils.bubble_template_extractor.extract_roi_1x(
-				gray, px, py, geom)
+			attempted += 1
+			top_y, bot_y, left_x, right_x = slot_map.roi_bounds(q_num, choice)
+			roi = omr_utils.bubble_template_extractor.extract_roi_from_bounds(
+				gray, left_x, top_y, right_x, bot_y)
 			if roi is None:
+				skipped_bounds += 1
 				continue
-			# quality filter
+			# quality filter rejects off-page or failed geometry
 			quality = omr_utils.bubble_template_extractor._score_patch_quality(roi)
 			if quality < 10.0:
+				skipped_quality += 1
 				continue
+			extracted += 1
 			# save ROI to letter subdirectory
 			letter_dir = os.path.join(output_dir, choice)
 			os.makedirs(letter_dir, exist_ok=True)
@@ -156,15 +146,18 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 			cv2.imwrite(roi_path, roi)
 			rois_by_letter[choice].append(roi)
 			# record metadata
+			cx, cy = slot_map.center(q_num, choice)
 			metadata.append({
 				"scan_id": scan_id,
 				"question": q_num,
 				"choice": choice,
-				"center_x": int(px),
-				"center_y": int(py),
+				"center_x": int(cx),
+				"center_y": int(cy),
 				"quality": float(quality),
 				"roi_path": roi_path,
 			})
+	print(f"    slots: {attempted} attempted, {extracted} extracted, "
+		f"{skipped_bounds} bounds-skip, {skipped_quality} quality-skip")
 	return rois_by_letter
 
 
@@ -256,8 +249,12 @@ def main() -> None:
 		json.dump(metadata, fh, indent=2)
 	print(f"\nsaved metadata for {len(metadata)} ROIs to {metadata_path}")
 	# summary
+	total_rois = 0
 	for letter in sorted(all_rois.keys()):
-		print(f"  {letter}: {len(all_rois[letter])} ROIs")
+		count = len(all_rois[letter])
+		total_rois += count
+		print(f"  {letter}: {count} ROIs")
+	print(f"  total: {total_rois} ROIs from {len(image_paths)} scans")
 	if args.dry_run:
 		print("\ndry run: skipping template construction")
 		return

@@ -2,11 +2,11 @@
 
 Follows a cryoEM-inspired class averaging approach: extract many instances
 of each letter (A-E), align them, and average to produce a clean reference
-template with improved SNR. Templates are stored at 5X oversize resolution
+template with improved SNR. Templates are stored at canonical high resolution
 to preserve sub-pixel detail from the averaging process.
 
 Offline template construction pipeline:
-1. extract_roi_1x() - crop at native resolution with alignment padding
+1. extract_roi_from_bounds() - crop at native resolution using lattice bounds
 2. _find_medoid_roi() - pick the most representative ROI as reference
 3. _align_roi_to_reference() - translation-only NCC alignment
 4. _apply_symmetry_augmentation() - mirror by letter symmetry
@@ -33,46 +33,42 @@ CANONICAL_TEMPLATE_HEIGHT = 88
 
 
 #============================================
-def extract_bubble_patch(gray: numpy.ndarray, cx: int, cy: int,
-	geom: dict) -> numpy.ndarray:
-	"""Crop a single bubble region from a grayscale image.
+def extract_roi_from_bounds(gray: numpy.ndarray, left_x: int,
+	top_y: int, right_x: int, bot_y: int,
+	pad_factor: float = 0.4) -> numpy.ndarray:
+	"""Crop bubble ROI using explicit lattice bounds with padding.
 
-	Extracts the pixel region around a bubble center using geometry
-	dimensions, adds small padding, and resizes to 5X oversize for
-	sub-pixel precision in the averaged template.
+	Accepts explicit pixel bounds only. Adds proportional padding for
+	alignment search room, clips to image edges, returns None if the
+	resulting region is too small.
 
 	Args:
-		gray: grayscale registered image
-		cx: bubble center x in pixels
-		cy: bubble center y in pixels
-		geom: pixel geometry dict with half_width and half_height
+		gray: grayscale image
+		left_x: left bound from SlotMap.roi_bounds()
+		top_y: top bound from SlotMap.roi_bounds()
+		right_x: right bound from SlotMap.roi_bounds()
+		bot_y: bottom bound from SlotMap.roi_bounds()
+		pad_factor: fractional padding beyond bounds (0.4 = 40%)
 
 	Returns:
-		numpy array of shape (TEMPLATE_HEIGHT, TEMPLATE_WIDTH), uint8,
-		or None if the region is out of bounds
+		numpy array (grayscale crop) or None if too small
 	"""
-	h, w = gray.shape
-	half_w = geom["half_width"]
-	half_h = geom["half_height"]
-	# extraction padding: small border around the bubble
-	pad_x = max(2, half_w * 0.1)
-	pad_y = max(1, half_h * 0.2)
-	# compute extraction region with padding
-	x1 = cx - half_w - pad_x
-	x2 = cx + half_w + pad_x
-	y1 = cy - half_h - pad_y
-	y2 = cy + half_h + pad_y
-	# bounds check
-	if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+	img_h, img_w = gray.shape
+	bounds_w = right_x - left_x
+	bounds_h = bot_y - top_y
+	# add proportional padding for alignment search room
+	pad_x = max(4.0, bounds_w * pad_factor)
+	pad_y = max(2.0, bounds_h * pad_factor)
+	# compute padded region, clipped to image edges
+	x1 = max(0, int(left_x - pad_x))
+	y1 = max(0, int(top_y - pad_y))
+	x2 = min(img_w, int(right_x + pad_x))
+	y2 = min(img_h, int(bot_y + pad_y))
+	# reject if resulting region is too small
+	if (x2 - x1) < 5 or (y2 - y1) < 3:
 		return None
-	# int-cast at array slicing boundary
-	patch = gray[int(y1):int(y2), int(x1):int(x2)]
-	# 5X oversize template dimensions
-	template_w = int((half_w * 2 + pad_x * 2) * 5)
-	template_h = int((half_h * 2 + pad_y * 2) * 5)
-	resized = cv2.resize(patch, (template_w, template_h),
-		interpolation=cv2.INTER_CUBIC)
-	return resized
+	roi = gray[y1:y2, x1:x2].copy()
+	return roi
 
 
 #============================================
@@ -105,79 +101,6 @@ def _score_patch_quality(patch: numpy.ndarray) -> float:
 	# contrast: bright interior minus dark edges
 	contrast = interior_mean - edge_mean
 	return contrast
-
-
-#============================================
-def extract_letter_templates(gray: numpy.ndarray, template: dict,
-	results: list, geom: dict, empty_score_max: float = 0.12,
-	min_samples: int = 10) -> dict:
-	"""Extract averaged pixel templates for each bubble letter (A-E).
-
-	Collects patches from empty bubbles (low fill score) across all
-	questions, groups by letter, filters for quality, and computes a
-	median stack for each letter to produce clean reference templates.
-
-	Args:
-		template: loaded template dictionary
-		results: list of answer dicts from read_answers()
-		empty_score_max: maximum fill score to consider a bubble empty
-		min_samples: minimum patches required per letter for averaging
-
-	Returns:
-		dict mapping letter string to numpy array template, e.g.
-		{"A": array, "B": array, ...}. Letters with insufficient
-		samples are omitted.
-	"""
-	h, w = gray.shape
-	choices = template["answers"]["choices"]
-	# collect patches grouped by letter
-	patches_by_letter = {choice: [] for choice in choices}
-	for entry in results:
-		answer = entry.get("answer", "")
-		flags = entry.get("flags", "")
-		scores = entry.get("scores", {})
-		positions = entry.get("positions", {})
-		# skip rows flagged as MULTIPLE (unreliable)
-		if "MULTIPLE" in flags:
-			continue
-		for choice in choices:
-			# only use empty bubbles: BLANK rows or non-selected choices
-			is_empty = False
-			if flags == "BLANK":
-				is_empty = True
-			elif answer and choice != answer:
-				is_empty = True
-			if not is_empty:
-				continue
-			# check fill score is below threshold
-			score = float(scores.get(choice, 1.0))
-			if score > empty_score_max:
-				continue
-			# get refined position
-			if choice not in positions:
-				continue
-			px, py = positions[choice]
-			# extract patch
-			patch = extract_bubble_patch(gray, px, py, geom)
-			if patch is not None:
-				patches_by_letter[choice].append(patch)
-	# build averaged templates via median stacking
-	templates = {}
-	for choice in choices:
-		patches = patches_by_letter[choice]
-		if len(patches) < min_samples:
-			continue
-		# score patch quality and sort descending
-		scored = [(p, _score_patch_quality(p)) for p in patches]
-		scored.sort(key=lambda item: item[1], reverse=True)
-		# take top 75% by quality to reject outliers
-		keep_count = max(min_samples, int(len(scored) * 0.75))
-		best_patches = [p for p, _ in scored[:keep_count]]
-		# median stack for robust averaging (rejects outlier pixels)
-		stack = numpy.stack(best_patches, axis=0)
-		median_template = numpy.median(stack, axis=0).astype(numpy.uint8)
-		templates[choice] = median_template
-	return templates
 
 
 #============================================
@@ -257,44 +180,6 @@ def scale_template_to_bubble(template_img: numpy.ndarray,
 	scaled = cv2.resize(template_img, (target_w, target_h),
 		interpolation=cv2.INTER_AREA)
 	return scaled
-
-
-#============================================
-def extract_roi_1x(gray: numpy.ndarray, cx: int, cy: int,
-	geom: dict, pad_factor: float = 0.4) -> numpy.ndarray:
-	"""Crop a bubble ROI at native (1X) resolution with alignment padding.
-
-	Unlike extract_bubble_patch() which resizes to 5X, this returns the
-	native-resolution crop with extra padding to allow translation search
-	during alignment. Uses symmetric half-widths from col_pitch/2 and
-	row_pitch/2 - the timing-mark grid is regular.
-
-	Args:
-		gray: grayscale image
-		cx: bubble center x in pixels
-		cy: bubble center y in pixels
-		geom: pixel geometry dict with half_width and half_height
-		pad_factor: fractional padding beyond bubble extent (0.4 = 40%)
-
-	Returns:
-		numpy array (grayscale crop) or None if out of bounds
-	"""
-	h, w = gray.shape
-	half_w = geom["half_width"]
-	half_h = geom["half_height"]
-	# generous padding for alignment search room
-	pad_x = max(4.0, half_w * pad_factor)
-	pad_y = max(2.0, half_h * pad_factor)
-	x1 = cx - half_w - pad_x
-	x2 = cx + half_w + pad_x
-	y1 = cy - half_h - pad_y
-	y2 = cy + half_h + pad_y
-	# bounds check
-	if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
-		return None
-	# int-cast at array slicing boundary
-	roi = gray[int(y1):int(y2), int(x1):int(x2)].copy()
-	return roi
 
 
 #============================================
