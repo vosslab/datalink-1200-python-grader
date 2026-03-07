@@ -27,6 +27,7 @@ import numpy
 # local repo modules
 import omr_utils.bubble_template_extractor
 import omr_utils.slot_map
+import omr_utils.template_builder
 import omr_utils.template_loader
 import omr_utils.timing_mark_anchors
 
@@ -175,7 +176,7 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 			continue
 		# run darkness filter on normalized ROIs for exposure independence
 		norm_kept, norm_rejected, means, cutoff = (
-			omr_utils.bubble_template_extractor._filter_dark_rois(
+			omr_utils.template_builder._filter_dark_rois(
 				norm_list, reject_fraction))
 		# compute summary statistics for console output
 		means_arr = numpy.array(means)
@@ -209,7 +210,7 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 		norm_kept_synced = [norm_list[i] for i in range(len(norm_list))
 			if i not in reject_set]
 		# save QC images with both raw and normalized montages
-		omr_utils.bubble_template_extractor._save_filter_qc(
+		omr_utils.template_builder._save_filter_qc(
 			raw_list, raw_kept, scan_id, letter, output_dir,
 			norm_rois_before=norm_list,
 			norm_rois_after=norm_kept_synced)
@@ -244,8 +245,8 @@ def _load_base_reference(repo_root: str) -> numpy.ndarray:
 	if base_img is None:
 		raise ValueError(f"could not read base reference: {base_path}")
 	# validate dimensions match canonical template size
-	expected_h = omr_utils.bubble_template_extractor.CANONICAL_TEMPLATE_HEIGHT
-	expected_w = omr_utils.bubble_template_extractor.CANONICAL_TEMPLATE_WIDTH
+	expected_h = omr_utils.template_builder.CANONICAL_TEMPLATE_HEIGHT
+	expected_w = omr_utils.template_builder.CANONICAL_TEMPLATE_WIDTH
 	if base_img.shape[0] != expected_h or base_img.shape[1] != expected_w:
 		raise ValueError(
 			f"base reference must be {expected_w}x{expected_h}, "
@@ -279,7 +280,7 @@ def _build_templates(all_rois: dict, output_dir: str,
 		# build template with two-pass alignment and symmetry
 		t_start = time.time()
 		template, alignment_table = (
-			omr_utils.bubble_template_extractor._build_letter_template(
+			omr_utils.template_builder._build_letter_template(
 				rois, letter, output_dir=output_dir,
 				base_reference=base_reference))
 		t_elapsed = time.time() - t_start

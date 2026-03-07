@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-03-13
+
+### Additions and New Features
+
+- Created [omr_utils/template_builder.py](../omr_utils/template_builder.py) for offline template construction pipeline. Contains alignment, medoid selection, symmetry enforcement, dark ROI filtering, and QC montage functions previously in `bubble_template_extractor.py`.
+
+### Behavior or Interface Changes
+
+- Split [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) into runtime utilities (~160 lines) and offline pipeline ([omr_utils/template_builder.py](../omr_utils/template_builder.py), ~680 lines). Runtime imports (`template_matcher.py`, `run_pipeline.py`) are unchanged.
+- Updated [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) to import moved functions from `omr_utils.template_builder` instead of `omr_utils.bubble_template_extractor`.
+
+### Removals and Deprecations
+
+- Deleted unused `_save_qc_montage()` from `bubble_template_extractor.py` (dead code, defined but never called).
+
 ## 2026-03-12
 
 ### Removals and Deprecations
