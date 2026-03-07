@@ -55,6 +55,20 @@ def parse_args() -> argparse.Namespace:
 		'-d', '--debug', dest='debug', action='store_true',
 		help="Enable debug overlays for all stages"
 	)
+	parser.add_argument(
+		'-r', '--refine-mode', dest='refine_mode',
+		type=str, default='ncc+sobel',
+		choices=('lattice', 'ncc+sobel', 'ncc'),
+		help="Refinement mode for A/B experiment (default: ncc+sobel)"
+	)
+	parser.add_argument(
+		'--ncc-diag', dest='ncc_diag', action='store_true',
+		help="Write per-slot NCC diagnostic CSV to output directory"
+	)
+	parser.add_argument(
+		'--ncc-no-mask', dest='ncc_no_mask', action='store_true',
+		help="Use unmasked NCC matching (skip bracket mask)"
+	)
 	args = parser.parse_args()
 	return args
 
@@ -100,7 +114,10 @@ def collect_image_paths(input_path: str) -> list:
 
 #============================================
 def process_single_image(image_path: str, template: dict,
-	output_dir: str, debug: bool = False) -> dict:
+	output_dir: str, debug: bool = False,
+	refine_mode: str = "ncc+sobel",
+	ncc_diag: bool = False,
+	ncc_no_mask: bool = False) -> dict:
 	"""Process a single scantron image through registration and extraction.
 
 	Args:
@@ -108,6 +125,9 @@ def process_single_image(image_path: str, template: dict,
 		template: loaded template dictionary
 		output_dir: directory for output files
 		debug: whether to save debug overlays
+		refine_mode: refinement mode for A/B experiment
+		ncc_diag: whether to write NCC diagnostic CSV
+		ncc_no_mask: whether to force unmasked NCC matching
 
 	Returns:
 		dict with keys: csv_path, student_id, num_answered
@@ -133,11 +153,21 @@ def process_single_image(image_path: str, template: dict,
 	# read student ID using SlotMap lattice geometry
 	student_id = omr_utils.student_id_reader.read_student_id(
 		registered, template, slot_map)
+	# build NCC diagnostic CSV path if requested
+	ncc_diag_path = None
+	if ncc_diag:
+		ncc_diag_path = os.path.join(output_dir,
+			f"{base_name}_ncc_diagnostics.csv")
 	# read answer bubbles using SlotMap
-	answers = omr_utils.bubble_reader.read_answers(
-		registered, template, slot_map=slot_map)
-	# count non-blank answers
-	num_answered = sum(1 for a in answers if a["answer"])
+	answers, ncc_diag_data = omr_utils.bubble_reader.read_answers(
+		registered, template, slot_map=slot_map,
+		refine_mode=refine_mode,
+		ncc_diag_path=ncc_diag_path,
+		ncc_no_mask=ncc_no_mask)
+	# count non-blank answers (exclude MULTIPLE-flagged as unreliable)
+	num_answered = sum(
+		1 for a in answers
+		if a["answer"] and "MULTIPLE" not in a.get("flags", ""))
 	# write answers CSV
 	csv_path = os.path.join(output_dir, f"{base_name}_answers.csv")
 	omr_utils.csv_writer.write_answers_csv(csv_path, student_id, answers)
@@ -162,6 +192,14 @@ def process_single_image(image_path: str, template: dict,
 		debug_path = os.path.join(output_dir, f"{base_name}_debug.png")
 		cv2.imwrite(debug_path, debug_img)
 		print(f"    debug: {debug_path}")
+		# NCC shift overlay: triple-dot seed/NCC/final positions
+		if ncc_diag_data:
+			ncc_img = omr_utils.debug_drawing.draw_ncc_shift_overlay(
+				registered, answers)
+			ncc_path = os.path.join(output_dir,
+				f"{base_name}_ncc_shifts.png")
+			cv2.imwrite(ncc_path, ncc_img)
+			print(f"    ncc_shifts: {ncc_path}")
 	result = {
 		"csv_path": csv_path,
 		"student_id": student_id,
@@ -185,7 +223,10 @@ def main() -> None:
 	print("=== Processing answer key ===")
 	print(f"  {args.key_file}")
 	key_result = process_single_image(
-		args.key_file, template, args.output_dir, args.debug)
+		args.key_file, template, args.output_dir, args.debug,
+		refine_mode=args.refine_mode,
+		ncc_diag=args.ncc_diag,
+		ncc_no_mask=args.ncc_no_mask)
 	key_csv = key_result["csv_path"]
 	print(f"  student ID: {key_result['student_id']}")
 	print(f"  answers: {key_result['num_answered']}")
@@ -209,7 +250,10 @@ def main() -> None:
 		base_name = os.path.splitext(os.path.basename(image_path))[0]
 		print(f"\n  {base_name}")
 		student_result = process_single_image(
-			image_path, template, args.output_dir, args.debug)
+			image_path, template, args.output_dir, args.debug,
+			refine_mode=args.refine_mode,
+			ncc_diag=args.ncc_diag,
+			ncc_no_mask=args.ncc_no_mask)
 		print(f"    ID: {student_result['student_id']}")
 		print(f"    answered: {student_result['num_answered']}")
 		# grade against key

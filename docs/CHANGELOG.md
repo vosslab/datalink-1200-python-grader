@@ -1,9 +1,62 @@
 # Changelog
 
+## 2026-03-12
+
+### Additions and New Features
+
+- Added `score_at_seed` return value to `match_bubble_local()` and `match_bubble_masked()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Extracts NCC score at the zero-shift (lattice) position from `result[search_radius, search_radius]` for score delta analysis. Return tuples expanded from 3/5 to 6 values: `(rcx, rcy, conf, dx, dy, score_at_seed)`.
+- Added `score_at_seed` to `refine_row_by_template()` return in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Per-choice return expanded from `(rcx, rcy, conf)` to `(rcx, rcy, conf, score_at_seed)`.
+- Added per-slot NCC diagnostic collection to `_stage_template_refine()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Collects `q_num`, `choice`, `seed_x`, `ncc_x`, `dx`, `dy`, `score_peak`, `score_seed`, `score_delta`, `accepted`, `reason` for every slot. Extended summary prints dx distribution stats, score statistics, and near-boundary counts.
+- Added `_write_ncc_diag_csv()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Writes per-slot diagnostic CSV when `ncc_diag_path` is provided.
+- Added `ncc_diag_path` and `ncc_no_mask` parameters to `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). When `ncc_no_mask=True`, passes `bubble_masks=None` to force unmasked NCC matching (`TM_CCOEFF_NORMED`).
+- Added `draw_ncc_shift_overlay()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Draws three dots per bubble: yellow (lattice seed), magenta (NCC peak), cyan (final applied position), with white shift vector lines. Written as `{stem}_ncc_shifts.png` when NCC diagnostics are active.
+- Added `--ncc-diag` flag to [run_pipeline.py](../run_pipeline.py). Writes per-slot NCC diagnostic CSV to output directory alongside other outputs.
+- Added `--ncc-no-mask` flag to [run_pipeline.py](../run_pipeline.py). Forces unmasked NCC matching to test whether bracket mask helps or hurts at runtime resolution.
+- Added [_temp_ncc_analysis.py](_temp_ncc_analysis.py) analysis script. Reads NCC diagnostic CSVs and computes dx histograms, score statistics, and masked vs unmasked comparison tables.
+
+### Behavior or Interface Changes
+
+- Changed `read_answers()` return type in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) from `list` to `tuple` of `(results, ncc_diag)`. The `ncc_diag` list contains per-slot diagnostic dicts (empty list when NCC is not run). Updated call sites in [run_pipeline.py](../run_pipeline.py).
+- NCC diagnostic positions (`seed_cx`, `seed_cy`, `ncc_cx`, `ncc_cy`) are now stored on each slot dict in `raw_data` and propagated to results as `ncc_positions` for overlay drawing.
+
+### Decisions and Failures
+
+- Masked vs unmasked NCC experiment on 4 images (2 flatbed, 2 camera). Full writeup in [docs/NCC_MASK_AB_EXPERIMENT_2.md](NCC_MASK_AB_EXPERIMENT_2.md).
+- Masked NCC (`TM_CCORR_NORMED`) shifts 4-5px mean with score deltas of only 0.045-0.098. 22-32% of slots hit the search boundary (|dx| >= 7px). The bracket mask at ~60x11px runtime resolution does not provide useful matching signal.
+- Unmasked NCC (`TM_CCOEFF_NORMED`) on flatbed scans shifts only 0.6-1.5px with zero boundary hits and larger score deltas (0.17-0.20). Much better behaved.
+- Unmasked NCC on camera photos shifts 2.5-3.9px. Visual inspection of triple-dot overlays confirms these shifts correct real perspective distortion misalignment. Camera photos genuinely need more correction than flatbed scans.
+- Confirmed that the default `refine_mode="lattice"` remains the correct choice.
+
+## 2026-03-11
+
+### Behavior or Interface Changes
+
+- Reduced vertical height of fill measurement windows in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Changed `_DZ_FILL_INSET_V` from 0.3864 to 0.4375, shrinking fill windows from 91% to 50% of the bar-to-bar corridor. Previous value left only ~1% gap from bracket bars, risking bar contamination in fill scoring. New value centers fill windows with 25% corridor gap on each side (fill height = 0.125 of row_pitch). Updated `_OLD_VALUES["fill_inset_v"]` in [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py) to match.
+
+### Additions and New Features
+
+- Added `refine_mode` parameter to `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) with three modes: `"lattice"` (pure geometry baseline), `"ncc+sobel"` (current default), and `"ncc"` (NCC only, no Sobel override). Enables A/B comparison of refinement stages.
+- Added `-r`/`--refine-mode` CLI argument to [run_pipeline.py](../run_pipeline.py) to select refinement mode from the command line. Choices: `lattice`, `ncc+sobel`, `ncc`.
+- Added `skip_sobel` parameter to `_stage_measure_rows()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). When True, uses lattice bounds directly instead of running Sobel x-edge refinement.
+- Added NCC refinement diagnostic counters to `_stage_template_refine()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Prints accepted/rejected slot counts and mean shift magnitudes after each refinement pass.
+
+### Fixes and Maintenance
+
+- Fixed `refinement_confidence` propagation in `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Confidence values stored in `raw_data` during NCC refinement now propagate into the `results` list, enabling debug overlay tier-color dots in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py).
+
+### Decisions and Failures
+
+- A/B experiment on key image 43F257A7: all three refinement modes (lattice, ncc+sobel, ncc) produce identical answers for Q1-71 (0 errors) and Q72-100 (0 false positives). Sobel stage never overrides NCC on this image because NCC+Sobel and NCC-only are identical.
+- A/B experiment on key image 804D5A50: lattice-only reads 69 answers correctly while NCC+Sobel and NCC-only read only 3 answers. NCC refinement is actively harming scoring on this image by shifting positions away from correct lattice locations. Mean |dx|=4.2px and Mean |dy|=5.3px shifts are too large. Sobel has no independent effect (NCC+Sobel = NCC-only).
+- Full experiment writeup with score statistics, separation gap analysis, and recommendations in [docs/NCC_SOBEL_AB_EXPERIMENT.md](NCC_SOBEL_AB_EXPERIMENT.md).
+
 ## 2026-03-10
 
 ### Fixes and Maintenance
 
+- Updated `_align_roi_to_reference()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) to run NCC translation search on an explicit white-padded ROI canvas. This preserves a real search window even when ROI and reference shapes are identical, instead of collapsing alignment to a no-op.
+- Removed hidden size harmonization from `_find_medoid_roi()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). The function now requires same-shape inputs and raises a clear error on mismatch rather than silently resizing to smallest dimensions.
+- Removed dead pre-alignment symmetry augmentation helper `_apply_symmetry_augmentation()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) to avoid retaining blur-inducing legacy path semantics.
 - Fixed horizontal detection zone bounds in fill windows, bracket bar strips, and student ID measurement zones. All horizontal bounds are now center-relative using `bracket_inner_half` (half-width from slot center to bracket inner face) instead of ROI-edge-relative using `fill_inset_h`. The ROI edge is the midpoint between adjacent slot centers, not the bracket outer face, so ROI-edge-relative bounds spilled outside the bracket. Affects [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py), [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py), [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py).
 - Replaced `_DZ_FILL_INSET_H` constant with `_DZ_BRACKET_INNER_HALF = 0.3104` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Replaced `fill_inset_h` key with `bracket_inner_half` in `measure_cfg()` return dict.
 - Updated [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py) to derive and print `bracket_inner_half` ratio (= 0.5 - h_margin/width - arm_w/width) instead of `fill_inset_h`.

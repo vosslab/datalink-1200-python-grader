@@ -396,3 +396,89 @@ def draw_combined_debug(image: numpy.ndarray, template: dict,
 	# overlay student ID positions
 	debug = draw_student_id_overlay(debug, template, slot_map)
 	return debug
+
+
+#============================================
+def draw_ncc_shift_overlay(image: numpy.ndarray,
+	results: list) -> numpy.ndarray:
+	"""Draw triple-dot overlay showing NCC seed, peak, and final positions.
+
+	Three dots per bubble:
+	- Yellow (3px): lattice seed center (before NCC)
+	- Magenta (3px): NCC peak center (after NCC, before shift filter)
+	- Cyan (3px): final applied center (after shift filter)
+	- Thin white line from seed to NCC peak (shows shift vector)
+
+	Args:
+		image: BGR registered image
+		results: list of answer dicts from read_answers with
+			ncc_positions data propagated
+
+	Returns:
+		annotated copy of the image
+	"""
+	debug = image.copy()
+	# colors (BGR)
+	yellow = (0, 255, 255)
+	magenta = (255, 0, 255)
+	cyan = (255, 255, 0)
+	dark_gray = (80, 80, 80)
+	# plus-sign arm length in pixels
+	arm = 3
+	alpha = 0.5
+	# draw each marker layer on a separate overlay for transparency
+	# layer 1: white shift vector lines
+	overlay_lines = debug.copy()
+	for entry in results:
+		ncc_pos = entry.get("ncc_positions", {})
+		for choice, ncc_data in ncc_pos.items():
+			seed_cx = int(round(ncc_data["seed_cx"]))
+			seed_cy = int(round(ncc_data["seed_cy"]))
+			ncc_cx = int(round(ncc_data["ncc_cx"]))
+			ncc_cy = int(round(ncc_data["ncc_cy"]))
+			cv2.line(overlay_lines, (seed_cx, seed_cy),
+				(ncc_cx, ncc_cy), dark_gray, 1)
+	cv2.addWeighted(overlay_lines, alpha, debug, 1.0 - alpha, 0, debug)
+	# layer 2: yellow seed plus markers
+	overlay_seed = debug.copy()
+	for entry in results:
+		ncc_pos = entry.get("ncc_positions", {})
+		for choice, ncc_data in ncc_pos.items():
+			cx = int(round(ncc_data["seed_cx"]))
+			cy = int(round(ncc_data["seed_cy"]))
+			cv2.line(overlay_seed, (cx - arm, cy),
+				(cx + arm, cy), yellow, 1)
+			cv2.line(overlay_seed, (cx, cy - arm),
+				(cx, cy + arm), yellow, 1)
+	cv2.addWeighted(overlay_seed, alpha, debug, 1.0 - alpha, 0, debug)
+	# layer 3: magenta NCC peak plus markers
+	overlay_ncc = debug.copy()
+	for entry in results:
+		ncc_pos = entry.get("ncc_positions", {})
+		for choice, ncc_data in ncc_pos.items():
+			cx = int(round(ncc_data["ncc_cx"]))
+			cy = int(round(ncc_data["ncc_cy"]))
+			cv2.line(overlay_ncc, (cx - arm, cy),
+				(cx + arm, cy), magenta, 1)
+			cv2.line(overlay_ncc, (cx, cy - arm),
+				(cx, cy + arm), magenta, 1)
+	cv2.addWeighted(overlay_ncc, alpha, debug, 1.0 - alpha, 0, debug)
+	# layer 4: cyan final applied plus markers
+	overlay_final = debug.copy()
+	for entry in results:
+		ncc_pos = entry.get("ncc_positions", {})
+		positions = entry.get("positions", {})
+		for choice, ncc_data in ncc_pos.items():
+			if choice in positions:
+				fx, fy = positions[choice]
+				cx = int(round(fx))
+				cy = int(round(fy))
+			else:
+				cx = int(round(ncc_data["seed_cx"]))
+				cy = int(round(ncc_data["seed_cy"]))
+			cv2.line(overlay_final, (cx - arm, cy),
+				(cx + arm, cy), cyan, 1)
+			cv2.line(overlay_final, (cx, cy - arm),
+				(cx, cy + arm), cyan, 1)
+	cv2.addWeighted(overlay_final, alpha, debug, 1.0 - alpha, 0, debug)
+	return debug

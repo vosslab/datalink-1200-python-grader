@@ -22,7 +22,7 @@ import math
 # symmetrized. Calibration date: 2026-03-10.
 _DZ_CENTER_EXCLUSION = 0.0896  # center letter glyph half-width / col_pitch
 _DZ_BRACKET_INNER_HALF = 0.3104  # half-width from cx to bracket inner face / col_pitch
-_DZ_FILL_INSET_V = 0.3864     # fill zone top (below bracket bar) / row_pitch
+_DZ_FILL_INSET_V = 0.4375     # fill zone top (below bracket bar) / row_pitch
 _DZ_BRACKET_BAR_V = 0.3295    # bracket bar top edge / row_pitch
 _DZ_BRACKET_BAR_H = 0.0455    # bracket bar thickness / row_pitch
 _DZ_REFINE_MAX_SHIFT = 0.3210 # max template shift / row_pitch

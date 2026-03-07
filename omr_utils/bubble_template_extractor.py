@@ -340,16 +340,14 @@ def _find_medoid_roi(rois: list) -> int:
 	n = len(rois)
 	if n <= 1:
 		return 0
-	# resize all ROIs to the same shape (smallest common dimensions)
-	min_h = min(r.shape[0] for r in rois)
-	min_w = min(r.shape[1] for r in rois)
-	resized = []
-	for r in rois:
-		if r.shape[0] != min_h or r.shape[1] != min_w:
-			resized.append(cv2.resize(r, (min_w, min_h),
-				interpolation=cv2.INTER_AREA))
-		else:
-			resized.append(r)
+	# medoid selection assumes all ROIs are already shape-normalized;
+	# fail fast instead of silently blurring via resize.
+	ref_shape = rois[0].shape
+	for idx, roi in enumerate(rois):
+		if roi.shape != ref_shape:
+			raise ValueError(
+				f"_find_medoid_roi expects same-shape ROIs; "
+				f"idx0={ref_shape}, idx{idx}={roi.shape}")
 	# compute pairwise NCC scores
 	avg_scores = numpy.zeros(n, dtype=numpy.float64)
 	for i in range(n):
@@ -363,8 +361,8 @@ def _find_medoid_roi(rois: list) -> int:
 				continue
 			# direct pixel correlation (no template matching needed,
 			# since they are the same size)
-			ri = resized[i].astype(numpy.float64)
-			rj = resized[j].astype(numpy.float64)
+			ri = rois[i].astype(numpy.float64)
+			rj = rois[j].astype(numpy.float64)
 			ri_norm = ri - ri.mean()
 			rj_norm = rj - rj.mean()
 			denom = numpy.sqrt(numpy.sum(ri_norm ** 2) * numpy.sum(rj_norm ** 2))
@@ -404,23 +402,28 @@ def _align_roi_to_reference(roi: numpy.ndarray,
 	"""
 	rh, rw = roi.shape
 	th, tw = reference.shape
-	# pad ROI with white (255) so the reference can slide;
-	# white matches the paper background and won't bias NCC
-	padded = cv2.copyMakeBorder(roi,
-		search_margin, search_margin,
-		search_margin, search_margin,
-		cv2.BORDER_CONSTANT, value=255)
-	# run NCC template matching on the padded image
-	result = cv2.matchTemplate(padded, reference, cv2.TM_CCOEFF_NORMED)
+	# build an explicit white canvas and place ROI centered inside it;
+	# this guarantees a translation search even when roi.shape == reference.shape.
+	canvas_h = max(rh + (2 * search_margin), th)
+	canvas_w = max(rw + (2 * search_margin), tw)
+	canvas = numpy.full((canvas_h, canvas_w), 255, dtype=numpy.uint8)
+	roi_y = (canvas_h - rh) // 2
+	roi_x = (canvas_w - rw) // 2
+	canvas[roi_y:roi_y + rh, roi_x:roi_x + rw] = roi
+	# run NCC template matching on the padded canvas
+	result = cv2.matchTemplate(canvas, reference, cv2.TM_CCOEFF_NORMED)
+	if result is None or result.size == 0:
+		fallback = cv2.resize(roi, (tw, th), interpolation=cv2.INTER_AREA)
+		return (fallback, 0, 0, 0.0)
 	_, max_val, _, max_loc = cv2.minMaxLoc(result)
 	score = float(max_val)
-	# max_loc is top-left of best match in padded coordinates
+	# max_loc is top-left of best match in canvas coordinates
 	best_x, best_y = max_loc
-	# the "centered" position in padded coords is (search_margin, search_margin)
-	dx = best_x - search_margin
-	dy = best_y - search_margin
-	# crop aligned region from padded image at the matched position
-	aligned = padded[best_y:best_y + th, best_x:best_x + tw].copy()
+	# no-shift reference top-left when centered is the ROI insertion point
+	dx = best_x - roi_x
+	dy = best_y - roi_y
+	# crop aligned region from canvas at the matched position
+	aligned = canvas[best_y:best_y + th, best_x:best_x + tw].copy()
 	return (aligned, dx, dy, score)
 
 
@@ -432,32 +435,6 @@ _SYMMETRY_AXIS = {
 	"D": "tb",
 	"E": "tb",
 }
-
-
-#============================================
-def _apply_symmetry_augmentation(rois: list, letter: str) -> list:
-	"""Double the ROI count by appending mirrored copies.
-
-	Each letter has a known symmetry axis:
-	- A: left-right flip (approximate bilateral symmetry)
-	- B/C/D/E: top-bottom flip (bracket pair is vertically symmetric)
-
-	Args:
-		rois: list of grayscale numpy arrays
-		letter: single letter string (A-E)
-
-	Returns:
-		list of rois + their mirrored copies (2x length)
-	"""
-	axis = _SYMMETRY_AXIS.get(letter, "tb")
-	augmented = list(rois)
-	for roi in rois:
-		if axis == "lr":
-			mirrored = numpy.fliplr(roi)
-		else:
-			mirrored = numpy.flipud(roi)
-		augmented.append(mirrored)
-	return augmented
 
 
 #============================================
@@ -959,7 +936,7 @@ def _save_qc_montage(rois: list, aligned_rois: list,
 	- Bottom row: final template and mask
 
 	Args:
-		rois: original ROI list (before augmentation)
+		rois: original ROI list
 		aligned_rois: aligned ROI list
 		alignment_table: list of alignment dicts with score and kept
 		letter: bubble letter

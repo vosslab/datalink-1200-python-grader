@@ -36,9 +36,12 @@ def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,
 		search_radius: pixels to search beyond the template extent
 
 	Returns:
-		tuple of (refined_cx, refined_cy, confidence) where confidence
-		is the NCC peak value (0.0 to 1.0). Returns the original
-		position with confidence=0 if matching fails.
+		tuple of (refined_cx, refined_cy, confidence, dx, dy,
+		score_at_seed) where confidence is the NCC peak value
+		(0.0 to 1.0), dx/dy are the shift from approximate
+		position, and score_at_seed is the NCC score at the
+		zero-shift baseline. Returns the original position with
+		confidence=0 if matching fails.
 	"""
 	h, w = gray.shape
 	th, tw = template_img.shape
@@ -51,17 +54,26 @@ def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,
 	roi_y2 = approx_cy + half_th + search_radius
 	# bounds check: ROI must fit within image
 	if roi_x1 < 0 or roi_y1 < 0 or roi_x2 > w or roi_y2 > h:
-		return (approx_cx, approx_cy, 0.0)
+		return (approx_cx, approx_cy, 0.0, 0, 0, 0.0)
 	# ROI must be larger than template in both dimensions
 	roi_w = roi_x2 - roi_x1
 	roi_h = roi_y2 - roi_y1
 	if roi_w <= tw or roi_h <= th:
-		return (approx_cx, approx_cy, 0.0)
+		return (approx_cx, approx_cy, 0.0, 0, 0, 0.0)
 	# extract search region and normalize contrast to match template
 	roi = gray[roi_y1:roi_y2, roi_x1:roi_x2]
 	roi = omr_utils.bubble_template_extractor.normalize_roi_percentile(roi)
 	# run normalized cross-correlation
 	result = cv2.matchTemplate(roi, template_img, cv2.TM_CCOEFF_NORMED)
+	# extract NCC score at seed position (zero-shift baseline)
+	# result map center = search_radius corresponds to zero shift
+	rh, rw = result.shape[:2]
+	seed_rx = search_radius
+	seed_ry = search_radius
+	if 0 <= seed_rx < rw and 0 <= seed_ry < rh:
+		score_at_seed = float(result[seed_ry, seed_rx])
+	else:
+		score_at_seed = 0.0
 	# find peak location
 	_, max_val, _, max_loc = cv2.minMaxLoc(result)
 	confidence = float(max_val)
@@ -70,7 +82,10 @@ def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,
 	# bubble center = match top-left + template half dimensions
 	refined_cx = roi_x1 + max_loc[0] + half_tw
 	refined_cy = roi_y1 + max_loc[1] + half_th
-	return (refined_cx, refined_cy, confidence)
+	# compute shift from approximate position
+	dx = refined_cx - approx_cx
+	dy = refined_cy - approx_cy
+	return (refined_cx, refined_cy, confidence, dx, dy, score_at_seed)
 
 
 #============================================
@@ -137,9 +152,11 @@ def match_bubble_masked(gray: numpy.ndarray, template_img: numpy.ndarray,
 		search_radius: pixels to search beyond template extent
 
 	Returns:
-		tuple of (refined_cx, refined_cy, confidence, dx, dy) where
-		dx/dy are the subpixel shift from approximate position.
-		Returns (approx_cx, approx_cy, 0.0, 0, 0) if matching fails.
+		tuple of (refined_cx, refined_cy, confidence, dx, dy,
+		score_at_seed) where dx/dy are the subpixel shift from
+		approximate position and score_at_seed is the NCC score
+		at the zero-shift baseline. Returns
+		(approx_cx, approx_cy, 0.0, 0, 0, 0.0) if matching fails.
 	"""
 	h, w = gray.shape
 	th, tw = template_img.shape
@@ -152,11 +169,11 @@ def match_bubble_masked(gray: numpy.ndarray, template_img: numpy.ndarray,
 	roi_y2 = approx_cy + half_th + search_radius
 	# bounds check
 	if roi_x1 < 0 or roi_y1 < 0 or roi_x2 > w or roi_y2 > h:
-		return (approx_cx, approx_cy, 0.0, 0, 0)
+		return (approx_cx, approx_cy, 0.0, 0, 0, 0.0)
 	roi_w = roi_x2 - roi_x1
 	roi_h = roi_y2 - roi_y1
 	if roi_w <= tw or roi_h <= th:
-		return (approx_cx, approx_cy, 0.0, 0, 0)
+		return (approx_cx, approx_cy, 0.0, 0, 0, 0.0)
 	# extract search region and normalize contrast to match template
 	roi = gray[roi_y1:roi_y2, roi_x1:roi_x2]
 	roi = omr_utils.bubble_template_extractor.normalize_roi_percentile(roi)
@@ -173,6 +190,14 @@ def match_bubble_masked(gray: numpy.ndarray, template_img: numpy.ndarray,
 	# use TM_CCORR_NORMED which is compatible with masked correlation
 	result = cv2.matchTemplate(roi, masked_template,
 		cv2.TM_CCORR_NORMED, mask=mask_img)
+	# extract NCC score at seed position (zero-shift baseline)
+	rh, rw = result.shape[:2]
+	seed_rx = search_radius
+	seed_ry = search_radius
+	if 0 <= seed_rx < rw and 0 <= seed_ry < rh:
+		score_at_seed = float(result[seed_ry, seed_rx])
+	else:
+		score_at_seed = 0.0
 	# find integer peak
 	_, max_val, _, max_loc = cv2.minMaxLoc(result)
 	confidence = float(max_val)
@@ -184,7 +209,7 @@ def match_bubble_masked(gray: numpy.ndarray, template_img: numpy.ndarray,
 	# compute shift from approximate position
 	dx = refined_cx - approx_cx
 	dy = refined_cy - approx_cy
-	return (refined_cx, refined_cy, confidence, dx, dy)
+	return (refined_cx, refined_cy, confidence, dx, dy, score_at_seed)
 
 
 #============================================
@@ -210,9 +235,10 @@ def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 			SlotMap.roi_bounds(); required for template scaling
 
 	Returns:
-		dict mapping choice letter to (refined_cx, refined_cy, confidence).
-		Choices without templates or below confidence threshold keep
-		their original positions with confidence=0.
+		dict mapping choice letter to (refined_cx, refined_cy,
+		confidence, score_at_seed). Choices without templates or
+		below confidence threshold keep their original positions
+		with confidence=0.
 	"""
 	refined = {}
 	for choice in choices:
@@ -222,7 +248,7 @@ def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 		# get the letter's template
 		template_img = templates.get(choice)
 		if template_img is None:
-			refined[choice] = (cx, cy, 0.0)
+			refined[choice] = (cx, cy, 0.0, 0.0)
 			continue
 		# get slot dimensions from lattice bounds
 		if slot_dims is not None and choice in slot_dims:
@@ -244,17 +270,17 @@ def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 			scaled_mask = cv2.resize(mask_img,
 				(scaled.shape[1], scaled.shape[0]),
 				interpolation=cv2.INTER_AREA)
-			rcx, rcy, conf, _, _ = match_bubble_masked(
+			rcx, rcy, conf, _, _, score_seed = match_bubble_masked(
 				gray, scaled, scaled_mask, cx, cy, search_radius)
 		else:
 			# fall back to unmasked NCC
-			rcx, rcy, conf = match_bubble_local(
+			rcx, rcy, conf, _, _, score_seed = match_bubble_local(
 				gray, scaled, cx, cy, search_radius)
 		if conf >= 0.30:
-			refined[choice] = (rcx, rcy, conf)
+			refined[choice] = (rcx, rcy, conf, score_seed)
 		else:
 			# keep original position when confidence is low
-			refined[choice] = (cx, cy, 0.0)
+			refined[choice] = (cx, cy, 0.0, 0.0)
 	return refined
 
 

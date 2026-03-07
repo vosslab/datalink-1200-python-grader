@@ -1,5 +1,8 @@
 """Read filled bubbles from a registered scantron image."""
 
+# Standard Library
+import csv
+
 # PIP3 modules
 import cv2
 import numpy
@@ -288,11 +291,13 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 #============================================
 def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 	template: dict, measure_cfg: dict,
-	slot_map: "omr_utils.slot_map.SlotMap") -> tuple:
+	slot_map: "omr_utils.slot_map.SlotMap",
+	skip_sobel: bool = False) -> tuple:
 	"""Refine horizontal edges and compute per-choice measurements.
 
 	Uses lattice ROI bounds from SlotMap. Local x-edge refinement
-	within the lattice ROI is still performed for precise measurement.
+	within the lattice ROI is still performed for precise measurement
+	unless skip_sobel is True.
 
 	Args:
 		gray: grayscale image
@@ -300,6 +305,8 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 		template: loaded template dictionary
 		measure_cfg: measurement constants from SlotMap.measure_cfg()
 		slot_map: SlotMap instance for lattice bounds
+		skip_sobel: if True, skip Sobel x-edge refinement and use
+			lattice bounds directly
 
 	Returns:
 		tuple of (all_edge_means, all_positions, all_edges)
@@ -324,10 +331,15 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 			# get lattice bounds for fallback
 			lat_bounds = slot_map.roi_bounds(q_num, choice)
 			_, _, def_left, def_right = lat_bounds
-			# refine horizontal edges within the lattice ROI
-			refined_cx, left_x, right_x = _refine_bubble_edges_x(
-				gray, px, refined_cy, top_y, bot_y, measure_cfg,
-				default_left=def_left, default_right=def_right)
+			# refine horizontal edges or use lattice bounds directly
+			if skip_sobel:
+				refined_cx = px
+				left_x = def_left
+				right_x = def_right
+			else:
+				refined_cx, left_x, right_x = _refine_bubble_edges_x(
+					gray, px, refined_cy, top_y, bot_y, measure_cfg,
+					default_left=def_left, default_right=def_right)
 			q_choices[choice]["refined_cx"] = refined_cx
 			# validate the detected rectangle
 			top_y, bot_y, left_x, right_x, refined_cx = (
@@ -397,7 +409,8 @@ def _stage_decide_answers(all_edge_means: list, all_positions: list,
 def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 	template: dict, measure_cfg: dict, bubble_templates: dict,
 	slot_map: "omr_utils.slot_map.SlotMap",
-	bubble_masks: dict = None) -> None:
+	bubble_masks: dict = None,
+	ncc_diag_path: str = None) -> list:
 	"""Optional template-matching refinement pass on localized rows.
 
 	Uses NCC to refine bubble x and y positions by matching pixel
@@ -415,10 +428,32 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 		bubble_templates: dict mapping letter to 5X oversize template array
 		bubble_masks: optional dict mapping letter to mask array
 		slot_map: SlotMap instance for lattice bounds (required)
+		ncc_diag_path: optional path to write diagnostic CSV; when
+			None, summary is still printed but CSV is not written
+
+	Returns:
+		list of per-slot diagnostic dicts (always returned for overlay)
 	"""
 	choices = template["answers"]["choices"]
 	# require high confidence for NCC-driven position updates
 	high_confidence = 0.45
+	# diagnostic counters for NCC refinement summary
+	total_slots = 0
+	accepted_count = 0
+	conf_rejected = 0
+	shift_rejected = 0
+	dx_sum = 0.0
+	dy_sum = 0.0
+	# per-slot diagnostic list
+	diag_rows = []
+	# collect all dx values for distribution stats
+	all_dx = []
+	all_dy = []
+	all_score_peak = []
+	all_score_seed = []
+	max_shift = measure_cfg["refine_max_shift"]
+	# search radius must cover the full allowed shift range
+	search_radius = max(8, int(round(max_shift)) + 1)
 	for q_choices in raw_data:
 		# build position dict and slot dimensions for this row
 		row_positions = {}
@@ -435,41 +470,158 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 		# run NCC refinement (masked if masks available)
 		refined = omr_utils.template_matcher.refine_row_by_template(
 			gray, bubble_templates, row_positions, choices,
+			search_radius=search_radius,
 			masks=bubble_masks, slot_dims=slot_dims)
 		# update x and y positions when confidence is high and shift is small
-		max_shift = measure_cfg["refine_max_shift"]
 		for choice in choices:
+			total_slots += 1
 			if choice not in refined:
 				continue
-			rcx, rcy, conf = refined[choice]
-			if conf < high_confidence:
-				continue
+			rcx, rcy, conf, score_seed = refined[choice]
 			cd = q_choices[choice]
-			# store refinement confidence for downstream use
-			cd["refinement_confidence"] = conf
-			# apply x correction
-			dx = abs(rcx - cd["px"])
-			if dx <= max_shift:
-				cd["px"] = rcx
-			# apply y correction and recompute bounds from lattice
-			dy = abs(rcy - cd["refined_cy"])
-			if dy <= max_shift:
-				cd["refined_cy"] = rcy
-				q_num = cd["q_num"]
-				lat_top, lat_bot, _, _ = slot_map.roi_bounds(
-					q_num, choice)
-				# shift lattice bounds by the y offset
-				lat_cy = slot_map.row_center(q_num)
-				y_offset = rcy - lat_cy
-				cd["top_y"] = lat_top + y_offset
-				cd["bot_y"] = lat_bot + y_offset
+			# save seed position before any modification
+			seed_x = cd["px"]
+			seed_y = cd["refined_cy"]
+			# compute signed dx/dy from seed to NCC peak
+			dx_ncc = rcx - seed_x
+			dy_ncc = rcy - seed_y
+			# determine acceptance and reason
+			accepted = False
+			reason = "none"
+			if conf < high_confidence:
+				conf_rejected += 1
+				reason = "conf_low"
+			else:
+				# store refinement confidence for downstream use
+				cd["refinement_confidence"] = conf
+				accepted = True
+				reason = "accepted"
+				# apply x correction
+				slot_dx = abs(dx_ncc)
+				if slot_dx <= max_shift:
+					cd["px"] = rcx
+					dx_sum += slot_dx
+				else:
+					shift_rejected += 1
+					reason = "shift_too_large"
+				# apply y correction and recompute bounds from lattice
+				slot_dy = abs(dy_ncc)
+				if slot_dy <= max_shift:
+					cd["refined_cy"] = rcy
+					dy_sum += slot_dy
+					q_num = cd["q_num"]
+					lat_top, lat_bot, _, _ = slot_map.roi_bounds(
+						q_num, choice)
+					# shift lattice bounds by the y offset
+					lat_cy = slot_map.row_center(q_num)
+					y_offset = rcy - lat_cy
+					cd["top_y"] = lat_top + y_offset
+					cd["bot_y"] = lat_bot + y_offset
+				else:
+					shift_rejected += 1
+					reason = "shift_too_large"
+				accepted_count += 1
+			# save diagnostic positions for overlay drawing
+			cd["seed_cx"] = seed_x
+			cd["seed_cy"] = seed_y
+			cd["ncc_cx"] = rcx
+			cd["ncc_cy"] = rcy
+			# build diagnostic record
+			diag_rows.append({
+				"q_num": cd["q_num"],
+				"choice": choice,
+				"seed_x": seed_x,
+				"ncc_x": rcx,
+				"dx": dx_ncc,
+				"dy": dy_ncc,
+				"score_peak": conf,
+				"score_seed": score_seed,
+				"score_delta": conf - score_seed,
+				"accepted": accepted,
+				"reason": reason,
+			})
+			# collect values for distribution stats
+			all_dx.append(dx_ncc)
+			all_dy.append(dy_ncc)
+			all_score_peak.append(conf)
+			all_score_seed.append(score_seed)
+	# print compact NCC refinement summary
+	mean_dx = dx_sum / max(accepted_count, 1)
+	mean_dy = dy_sum / max(accepted_count, 1)
+	print(f"  NCC refinement: {total_slots} slots,"
+		f" {accepted_count} accepted (conf>={high_confidence}),"
+		f" {conf_rejected} conf-rejected,"
+		f" {shift_rejected} shift-rejected")
+	print(f"  Mean |dx|={mean_dx:.1f}px  Mean |dy|={mean_dy:.1f}px")
+	# extended distribution stats (always printed when NCC runs)
+	if all_dx:
+		dx_arr = numpy.array(all_dx)
+		peak_arr = numpy.array(all_score_peak)
+		seed_arr = numpy.array(all_score_seed)
+		delta_arr = peak_arr - seed_arr
+		# dx distribution
+		print(f"  NCC dx distribution:"
+			f" mean={numpy.mean(dx_arr):.1f}"
+			f" median={numpy.median(dx_arr):.1f}"
+			f" max={numpy.max(numpy.abs(dx_arr)):.1f}"
+			f" std={numpy.std(dx_arr):.1f}")
+		# score statistics
+		print(f"  NCC scores:"
+			f" mean_peak={numpy.mean(peak_arr):.3f}"
+			f" median_peak={numpy.median(peak_arr):.3f}"
+			f" mean_seed={numpy.mean(seed_arr):.3f}"
+			f" mean_delta={numpy.mean(delta_arr):.4f}")
+		# near-boundary count (peaks near search_radius limit)
+		near_boundary = int(numpy.sum(
+			numpy.abs(dx_arr) >= search_radius - 1))
+		print(f"  Peak offset from center:"
+			f" near-boundary count: {near_boundary}/{len(dx_arr)}")
+		# config values for interpretation
+		row_pitch = measure_cfg["row_pitch"]
+		print(f"  Config: row_pitch={row_pitch:.1f}"
+			f" search_radius={search_radius}"
+			f" refine_max_shift={max_shift:.1f}")
+	# write diagnostic CSV if path provided
+	if ncc_diag_path is not None and diag_rows:
+		_write_ncc_diag_csv(ncc_diag_path, diag_rows)
+	return diag_rows
+
+
+#============================================
+def _write_ncc_diag_csv(csv_path: str, diag_rows: list) -> None:
+	"""Write per-slot NCC diagnostic records to a CSV file.
+
+	Args:
+		csv_path: output CSV file path
+		diag_rows: list of diagnostic dicts from _stage_template_refine
+	"""
+	fieldnames = [
+		"q_num", "choice", "seed_x", "ncc_x", "dx", "dy",
+		"score_peak", "score_seed", "score_delta",
+		"accepted", "reason",
+	]
+	with open(csv_path, "w", newline="") as f:
+		writer = csv.DictWriter(f, fieldnames=fieldnames)
+		writer.writeheader()
+		for row in diag_rows:
+			# format floats for readability
+			out = dict(row)
+			for key in ("seed_x", "ncc_x", "dx", "dy"):
+				out[key] = f"{out[key]:.2f}"
+			for key in ("score_peak", "score_seed", "score_delta"):
+				out[key] = f"{out[key]:.4f}"
+			writer.writerow(out)
+	print(f"  NCC diagnostics CSV: {csv_path}")
 
 
 #============================================
 def read_answers(image: numpy.ndarray, template: dict,
 	slot_map: "omr_utils.slot_map.SlotMap",
 	multi_gap: float = 0.03, bubble_templates: dict = None,
-	bubble_masks: dict = None) -> list:
+	bubble_masks: dict = None,
+	refine_mode: str = "ncc+sobel",
+	ncc_diag_path: str = None,
+	ncc_no_mask: bool = False) -> tuple:
 	"""Read all 100 answers from a registered scantron image.
 
 	Uses self-referencing scoring: for each question, the lightest
@@ -490,12 +642,20 @@ def read_answers(image: numpy.ndarray, template: dict,
 			if None, attempts to load from config/bubble_templates/
 		bubble_masks: optional dict of mask arrays for masked NCC;
 			if None, attempts to load alongside templates
+		refine_mode: refinement mode for A/B experiment:
+			"ncc+sobel" = NCC then Sobel (current default),
+			"ncc" = NCC only (no Sobel override),
+			"lattice" = pure geometry baseline (no refinement)
+		ncc_diag_path: optional path to write NCC diagnostic CSV;
+			when None, diagnostics are still printed but not saved
+		ncc_no_mask: when True, force unmasked NCC matching
 
 	Returns:
-		list of dicts with keys: question, answer, scores, flags,
-		positions, edges. answer is a choice letter or empty string
-		if blank, scores is a dict of choice->score, flags is a string,
-		edges maps choice to (top_y, bot_y, left_x, right_x)
+		tuple of (results, ncc_diag) where results is a list of
+		dicts with keys: question, answer, scores, flags,
+		positions, edges, refinement_confidence; and ncc_diag
+		is a list of per-slot diagnostic dicts (or empty list if
+		NCC was not run)
 	"""
 	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 	# light blur to reduce noise while preserving fill signal
@@ -515,23 +675,51 @@ def read_answers(image: numpy.ndarray, template: dict,
 	slot_map.print_lattice_diagnostic()
 	# print ROI diagnostics for representative slots
 	slot_map.print_roi_diagnostic()
+	# print active refinement mode
+	mask_status = "no-mask" if ncc_no_mask else "masked"
+	print(f"  refine_mode: {refine_mode} ({mask_status})")
 	# localize rows using pure lattice positions
 	raw_data = _stage_localize_rows(gray, template, measure_cfg, slot_map)
 	# optional NCC template matching refinement
-	if bubble_templates is None:
-		loaded_templates, loaded_masks = (
-			omr_utils.template_matcher.try_load_bubble_templates())
-		bubble_templates = loaded_templates
-		# use loaded masks if caller did not provide any
-		if bubble_masks is None:
-			bubble_masks = loaded_masks
-	if bubble_templates:
-		_stage_template_refine(gray, raw_data, template, measure_cfg,
-			bubble_templates, slot_map,
-			bubble_masks=bubble_masks)
+	ncc_diag = []
+	if refine_mode in ("ncc+sobel", "ncc"):
+		if bubble_templates is None:
+			loaded_templates, loaded_masks = (
+				omr_utils.template_matcher.try_load_bubble_templates())
+			bubble_templates = loaded_templates
+			# use loaded masks if caller did not provide any
+			if bubble_masks is None:
+				bubble_masks = loaded_masks
+		# force unmasked NCC when --ncc-no-mask flag is set
+		effective_masks = None if ncc_no_mask else bubble_masks
+		if bubble_templates:
+			ncc_diag = _stage_template_refine(
+				gray, raw_data, template, measure_cfg,
+				bubble_templates, slot_map,
+				bubble_masks=effective_masks,
+				ncc_diag_path=ncc_diag_path)
+	# determine whether to skip Sobel x-edge refinement
+	use_skip_sobel = (refine_mode in ("ncc", "lattice"))
 	# measure brightness and decide answers
 	all_edge_means, all_positions, all_edges = _stage_measure_rows(
-		gray, raw_data, template, measure_cfg, slot_map)
+		gray, raw_data, template, measure_cfg, slot_map,
+		skip_sobel=use_skip_sobel)
 	results = _stage_decide_answers(
 		all_edge_means, all_positions, all_edges, choices, multi_gap)
-	return results
+	# propagate NCC refinement confidence to results for debug overlay
+	for q_idx, q_choices in enumerate(raw_data):
+		conf_dict = {}
+		ncc_positions = {}
+		for choice, cd in q_choices.items():
+			conf_dict[choice] = cd.get("refinement_confidence", -1.0)
+			# propagate NCC diagnostic positions for overlay
+			if "seed_cx" in cd:
+				ncc_positions[choice] = {
+					"seed_cx": cd["seed_cx"],
+					"seed_cy": cd["seed_cy"],
+					"ncc_cx": cd["ncc_cx"],
+					"ncc_cy": cd["ncc_cy"],
+				}
+		results[q_idx]["refinement_confidence"] = conf_dict
+		results[q_idx]["ncc_positions"] = ncc_positions
+	return (results, ncc_diag)

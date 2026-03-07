@@ -30,7 +30,7 @@ import numpy
 _OLD_VALUES = {
 	"center_exclusion": 0.0896,
 	"bracket_bar_h": 0.0455,
-	"fill_inset_v": 0.3864,
+	"fill_inset_v": 0.4375,
 	"bracket_bar_v": 0.3295,
 	"bracket_inner_half": 0.3104,
 	"refine_max_shift": 0.3210,
