@@ -10,19 +10,6 @@ import omr_utils.timing_marks_top
 
 
 #============================================
-def _default_transform() -> dict:
-	"""Return identity transform with zero confidence."""
-	return {
-		"x_scale": 1.0,
-		"x_offset": 0.0,
-		"y_scale": 1.0,
-		"y_offset": 0.0,
-		"top_confidence": 0.0,
-		"left_confidence": 0.0,
-	}
-
-
-#============================================
 def _extract_components(gray_strip: numpy.ndarray) -> list:
 	"""Extract connected components from a grayscale strip.
 
@@ -327,65 +314,6 @@ def _match_predictions_to_marks(predictions: list, marks: list,
 
 
 #============================================
-def _estimate_axis_transform(observed: list, expected_start: float,
-	expected_end: float, expected_count: int) -> tuple:
-	"""Estimate (scale, offset, confidence) for one axis from timing marks."""
-	min_marks = max(4, expected_count // 8)
-	if len(observed) < min_marks:
-		return (1.0, 0.0, 0.0)
-	exp_span = float(expected_end - expected_start)
-	if exp_span <= 1.0 or expected_count < 2:
-		return (1.0, 0.0, 0.0)
-	exp_step = exp_span / float(expected_count - 1)
-	if exp_step <= 0.0:
-		return (1.0, 0.0, 0.0)
-	obs_arr = numpy.array(observed, dtype=float)
-	# Map observed marks to nearest expected index, then fit against
-	# those expected positions. This remains stable when edge marks are
-	# missing or merged, which previously biased endpoint-based fitting.
-	approx_idx = numpy.rint((obs_arr - expected_start) / exp_step).astype(int)
-	approx_idx = numpy.clip(approx_idx, 0, expected_count - 1)
-	unique_idx = numpy.unique(approx_idx)
-	if len(unique_idx) < max(3, min_marks // 2):
-		return (1.0, 0.0, 0.0)
-	exp_pts = []
-	obs_pts = []
-	for idx in unique_idx:
-		mask = (approx_idx == idx)
-		exp_pts.append(expected_start + float(idx) * exp_step)
-		obs_pts.append(float(numpy.mean(obs_arr[mask])))
-	exp_pts = numpy.array(exp_pts, dtype=float)
-	obs_pts = numpy.array(obs_pts, dtype=float)
-	if len(exp_pts) >= 2:
-		scale, offset = numpy.polyfit(exp_pts, obs_pts, 1)
-	else:
-		scale = 1.0
-		offset = float(obs_pts[0] - exp_pts[0])
-	fit = scale * exp_pts + offset
-	rmse = float(numpy.sqrt(numpy.mean((obs_pts - fit) ** 2)))
-	# confidence from two factors:
-	# 1. count adequacy: scale threshold to expected count so small mark
-	#    sets (e.g., 7 top blocks) can still reach full confidence
-	adequacy_threshold = min(25.0, expected_count * 0.8)
-	count_adequate = min(1.0, len(unique_idx) / adequacy_threshold)
-	# 2. span coverage: do detected marks cover the expected range?
-	obs_span = float(obs_pts[-1] - obs_pts[0]) if len(obs_pts) >= 2 else 0.0
-	span_ratio = obs_span / max(1.0, exp_span)
-	confidence = min(count_adequate, span_ratio)
-	# penalize unrealistic scales
-	if scale < 0.93 or scale > 1.07:
-		confidence *= 0.25
-	elif scale < 0.97 or scale > 1.03:
-		confidence *= 0.60
-	# relaxed RMSE penalty: phone photos have more geometric distortion
-	if rmse > 12.0:
-		confidence *= 0.50
-	if rmse > 20.0:
-		confidence *= 0.50
-	return (float(scale), float(offset), float(confidence))
-
-
-#============================================
 def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 	"""Estimate anchor-relative x/y transform from top and left timing marks.
 
@@ -404,7 +332,14 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 		- top_strip_region: (x1, y1, x2, y2) of top search strip
 	"""
 	h, w = gray.shape
-	transform = _default_transform()
+	transform = {
+		"x_scale": 1.0,
+		"x_offset": 0.0,
+		"y_scale": 1.0,
+		"y_offset": 0.0,
+		"top_confidence": 0.0,
+		"left_confidence": 0.0,
+	}
 	# initialize empty mark lists and strip regions
 	transform["left_marks"] = []
 	transform["top_marks"] = []
@@ -412,7 +347,6 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 	transform["top_row2_marks"] = []
 	transform["top_col_spacing"] = 0.0
 	transform["top_fp_x0"] = 0.0
-	transform["top_col_ratio"] = 0
 	transform["left_strip_region"] = (0, 0, 0, 0)
 	transform["top_strip_region"] = (0, 0, 0, 0)
 	timing = template.get("timing_marks", {})
@@ -478,14 +412,10 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 				transform["left_gap_b"] = footprint["gap_b"]
 				transform["left_confidence"] = footprint["score"]
 			else:
-				# fallback: store raw marks with zero confidence
-				left_marks_image = []
-				for cand in raw_candidates_image:
-					left_marks_image.append({
-						"center_y": cand["center_y"],
-						"bbox": cand["bbox"],
-					})
-				transform["left_marks"] = left_marks_image
+				# fitting failed: leave marks empty with zero confidence
+				# (SlotMap will reject zero-confidence transforms)
+				print(f"  WARNING: left footprint fitting failed "
+					f"({len(raw_candidates_image)} candidates)")
 				transform["left_confidence"] = 0.0
 	# detect top timing marks (x centers in image coordinates)
 	if top_edge:
@@ -520,16 +450,7 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 					"bbox": (bx + x1, by + y1, bw, bh),
 				})
 			transform["top_marks"] = top_marks_image
-			# extract centers for axis transform fitting
-			top_centers = [m["center_x"] for m in top_marks_image]
-			exp_start = float(top_edge.get("start_x", 0.04) * w)
-			exp_end = float(top_edge.get("end_x", 0.96) * w)
-			exp_count = int(top_edge.get("expected_count", 53))
-			# use footprint model spacing to map marks to column indices
-			# the footprint spacing is N times the template column step
-			exp_step = (exp_end - exp_start) / max(1, exp_count - 1)
-			# try footprint-based transform first
-			top_conf = 0.0
+			# derive local lattice column pitch from footprint
 			fp = omr_utils.timing_marks_top._detect_top_footprint(raw_candidates, x2 - x1)
 			if fp is not None and fp["score"] > 0.20:
 				# store Row-2 matches in image coords for debug overlay
@@ -544,109 +465,25 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 				transform["top_row2_marks"] = r2_marks_image
 				fp_spacing = fp["model"]["spacing"]
 				fp_x0 = fp["model"]["x0"]
-				# map each mark to its column in the 53-column grid
-				# using the footprint model's spacing/origin
-				col_ratio = fp_spacing / max(1.0, exp_step)
-				# derive the fine template-column step from the
-				# measured footprint spacing; fp_spacing is the coarse
-				# mark spacing (every Nth column), so divide by the
-				# rounded integer ratio to recover the fine grid step
-				fine_col_step = fp_spacing / max(1.0, round(col_ratio))
-				# store fine column spacing for downstream bubble geometry
-				transform["top_col_spacing"] = float(fine_col_step)
-				# store lattice origin and integer ratio for lattice-based centers
+				# coarse marks land every N local-lattice columns
+				col_stride = int(top_edge.get(
+					"footprint_column_stride", 3))
+				# A/B stride diagnostic: compare stride-1 vs stride-3
+				col_pitch_s1 = fp_spacing
+				col_pitch_s3 = fp_spacing / 3.0
+				print(f"  [stride A/B] fp_spacing={fp_spacing:.1f}px"
+					f"  stride-1 col_pitch={col_pitch_s1:.1f}px"
+					f"  stride-3 col_pitch={col_pitch_s3:.1f}px"
+					f"  using stride={col_stride}")
+				# local lattice column pitch
+				lattice_col_pitch = fp_spacing / max(1, col_stride)
+				transform["top_col_spacing"] = float(lattice_col_pitch)
 				transform["top_fp_x0"] = float(fp_x0)
-				transform["top_col_ratio"] = int(round(col_ratio))
-				if col_ratio >= 1.0:
-					mapped_centers = []
-					for cx in top_centers:
-						# footprint column index (float)
-						fp_col_f = (cx - fp_x0) / fp_spacing
-						# template column index (float ratio)
-						tmpl_col = round(fp_col_f * col_ratio)
-						# clamp to valid range
-						tmpl_col = max(0, min(exp_count - 1, tmpl_col))
-						mapped_centers.append(
-							exp_start + tmpl_col * exp_step)
-					if len(mapped_centers) >= 3:
-						# compute transform using mapped expected
-						# positions vs observed positions
-						exp_arr = numpy.array(mapped_centers)
-						obs_arr = numpy.array(top_centers)
-						x_scale, x_offset = numpy.polyfit(
-							exp_arr, obs_arr, 1)
-						fit_vals = x_scale * exp_arr + x_offset
-						rmse = float(numpy.sqrt(
-							numpy.mean((obs_arr - fit_vals) ** 2)))
-						# confidence from mark count and fit quality
-						n_marks = len(top_centers)
-						top_conf = min(1.0, n_marks / 6.0)
-						# penalize unrealistic scales
-						if x_scale < 0.93 or x_scale > 1.07:
-							top_conf *= 0.25
-						elif x_scale < 0.97 or x_scale > 1.03:
-							top_conf *= 0.60
-						if rmse > 12.0:
-							top_conf *= 0.50
-						if top_conf >= 0.35:
-							transform["x_scale"] = float(x_scale)
-							transform["x_offset"] = float(x_offset)
-							transform["top_confidence"] = float(top_conf)
-			# fallback: try raw mark positions with 7-mark model
-			if top_conf < 0.35:
-				x_scale, x_offset, top_conf = _estimate_axis_transform(
-					top_centers, exp_start, exp_end, 7)
-				if top_conf >= 0.35:
-					transform["x_scale"] = x_scale
-					transform["x_offset"] = x_offset
-					transform["top_confidence"] = top_conf
+				# confidence from mark count
+				n_marks = len(top_marks_image)
+				top_conf = min(1.0, n_marks / 6.0)
+				transform["top_confidence"] = float(top_conf)
 	return transform
-
-
-#============================================
-def mark_index_to_normalized(mark_index: float, edge_start: float,
-	edge_end: float, edge_count: int) -> float:
-	"""Convert a fractional timing mark index to a normalized coordinate.
-
-	A fractional index of 10.46 means the position is 46% of the way
-	between mark 10 and mark 11. This converts such indices to the
-	normalized (0.0-1.0) coordinate system used by the template.
-
-	Args:
-		mark_index: fractional mark index (e.g., 10.46)
-		edge_start: normalized position of first mark on the edge
-		edge_end: normalized position of last mark on the edge
-		edge_count: total number of expected marks on the edge
-
-	Returns:
-		normalized coordinate (0.0 to 1.0)
-	"""
-	# spacing between adjacent marks in normalized coordinates
-	step = (edge_end - edge_start) / max(1, edge_count - 1)
-	norm = edge_start + mark_index * step
-	return norm
-
-
-#============================================
-def normalized_to_mark_index(norm_coord: float, edge_start: float,
-	edge_end: float, edge_count: int) -> float:
-	"""Convert a normalized coordinate to a fractional timing mark index.
-
-	Inverse of mark_index_to_normalized. Used to compute mark indices
-	from existing hardcoded coordinates during template migration.
-
-	Args:
-		norm_coord: normalized coordinate (0.0 to 1.0)
-		edge_start: normalized position of first mark on the edge
-		edge_end: normalized position of last mark on the edge
-		edge_count: total number of expected marks on the edge
-
-	Returns:
-		fractional timing mark index
-	"""
-	step = (edge_end - edge_start) / max(1, edge_count - 1)
-	mark_index = (norm_coord - edge_start) / step
-	return mark_index
 
 
 #============================================

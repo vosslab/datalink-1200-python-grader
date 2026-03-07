@@ -115,7 +115,7 @@ def process_single_image(image_path: str, template: dict,
 	# load and register the raw image
 	raw_image = omr_utils.image_registration.load_image(image_path)
 	registered = omr_utils.image_registration.register_image(raw_image)
-	# compute timing mark transform for anchor-derived geometry
+	# compute timing mark transform for anchor-derived measure_cfgetry
 	gray = cv2.cvtColor(registered, cv2.COLOR_BGR2GRAY)
 	gray = cv2.GaussianBlur(gray, (3, 3), 0)
 	raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
@@ -124,9 +124,9 @@ def process_single_image(image_path: str, template: dict,
 		f" top={raw_transform.get('top_confidence', 0):.3f}"
 		f" marks: left={len(raw_transform.get('left_marks', []))}"
 		f" top={len(raw_transform.get('top_marks', []))}")
-	# build SlotMap from timing mark transform (single geometry authority)
+	# build SlotMap from timing mark transform (single measure_cfgetry authority)
 	slot_map = omr_utils.slot_map.SlotMap(raw_transform, template)
-	geom = slot_map.geom()
+	measure_cfg = slot_map.measure_cfg()
 	# read student ID
 	student_id = omr_utils.student_id_reader.read_student_id(
 		registered, template, raw_transform)
@@ -142,11 +142,11 @@ def process_single_image(image_path: str, template: dict,
 	if debug:
 		# scored: bubble outlines with filled/not determination and confidence
 		scored_img = omr_utils.debug_drawing.draw_scored_overlay(
-			registered, template, answers, geom)
+			registered, template, answers, measure_cfg, slot_map=slot_map)
 		scored_path = os.path.join(output_dir, f"{base_name}_scored.png")
 		cv2.imwrite(scored_path, scored_img)
 		print(f"    scored: {scored_path}")
-		# lattice crosshairs: verify geometry independently of measurement
+		# lattice crosshairs: verify measure_cfgetry independently of measurement
 		lattice_img = omr_utils.debug_drawing.draw_lattice_crosshairs(
 			registered, slot_map, template)
 		lattice_path = os.path.join(output_dir, f"{base_name}_lattice.png")
@@ -154,7 +154,8 @@ def process_single_image(image_path: str, template: dict,
 		print(f"    lattice: {lattice_path}")
 		# debug: timing marks + guide lines + bubble overlays combined
 		debug_img = omr_utils.debug_drawing.draw_combined_debug(
-			registered, template, raw_transform, answers, geom)
+			registered, template, raw_transform, answers, measure_cfg,
+			slot_map=slot_map)
 		debug_path = os.path.join(output_dir, f"{base_name}_debug.png")
 		cv2.imwrite(debug_path, debug_img)
 		print(f"    debug: {debug_path}")

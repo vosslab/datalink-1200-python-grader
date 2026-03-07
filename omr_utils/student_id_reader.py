@@ -34,7 +34,7 @@ def read_student_id(image, template: dict, transform: dict,
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
 	# get bubble geometry from anchor-derived spacing
-	geom = omr_utils.slot_map.SlotMap(transform, template).geom()
+	geom = omr_utils.slot_map.SlotMap(transform, template).student_id_geom()
 	digits = []
 	for d in range(num_digits):
 		best_value = 0
@@ -79,7 +79,7 @@ def read_student_id_detailed(image, template: dict, transform: dict,
 	num_digits = sid_config["num_digits"]
 	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
 	# get bubble geometry from anchor-derived spacing
-	geom = omr_utils.slot_map.SlotMap(transform, template).geom()
+	geom = omr_utils.slot_map.SlotMap(transform, template).student_id_geom()
 	digit_details = []
 	id_string = ""
 	for d in range(num_digits):

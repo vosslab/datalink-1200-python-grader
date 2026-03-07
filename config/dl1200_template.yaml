@@ -14,14 +14,14 @@ timing_marks:
     x: 0.018
     start_y: 0.067
     end_y: 0.91
-    expected_count: 60
   top_edge:
     y: 0.035
     start_x: 0.04
     end_x: 0.96
-    expected_count: 53
+    footprint_column_stride: 3
 
 answers:
+  answer_lattice_columns: 15
   num_questions: 100
   choices:
     - A
@@ -30,32 +30,33 @@ answers:
     - D
     - E
   bubble_radius: 0.007
-  bubble_shape:
-    aspect_ratio: 5.4545
 
   left_column:
     question_range: [1, 50]
     first_question_y: 0.2111
     question_spacing_y: 0.01418
-    # integer column indices in the 53-column top timing mark grid
+    q_col: 0
+    # integer column indices in the local 15-column lattice (0-14)
+    # 0=Q#, 1-5=A-E, 6=gap, 7=Q#, 8-12=A-E, 13-14=margin
     choice_columns:
-      A: 5
-      B: 8
-      C: 10
-      D: 13
-      E: 16
+      A: 1
+      B: 2
+      C: 3
+      D: 4
+      E: 5
 
   right_column:
     question_range: [51, 100]
     first_question_y: 0.2111
     question_spacing_y: 0.01418
-    # integer column indices in the 53-column top timing mark grid
+    q_col: 7
+    # integer column indices in the local 15-column lattice (0-14)
     choice_columns:
-      A: 24
-      B: 27
-      C: 30
-      D: 33
-      E: 36
+      A: 8
+      B: 9
+      C: 10
+      D: 11
+      E: 12
 
 student_id:
   num_digits: 9

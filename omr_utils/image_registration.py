@@ -362,37 +362,3 @@ def draw_debug_overlay(image: numpy.ndarray, corners: numpy.ndarray,
 	return debug
 
 
-#============================================
-def draw_registered_debug(registered: numpy.ndarray, template: dict) -> numpy.ndarray:
-	"""Draw template grid overlay on a registered image.
-
-	Shows all expected bubble positions as circles for visual
-	verification of template alignment.
-
-	Args:
-		registered: registered (warped, oriented, resized) image
-		template: loaded template dictionary
-
-	Returns:
-		annotated copy of the registered image
-	"""
-	# import locally to avoid circular dependency
-	import omr_utils.template_loader
-	debug = registered.copy()
-	h, w = debug.shape[:2]
-	radius = omr_utils.template_loader.get_bubble_radius_px(template, w, h)
-	# draw answer bubbles
-	all_coords = omr_utils.template_loader.get_all_question_coords(template)
-	for entry in all_coords:
-		px, py = omr_utils.template_loader.to_pixels(entry["norm_x"], entry["norm_y"], w, h)
-		# color by choice: A=red, B=green, C=blue, D=yellow, E=cyan
-		colors = {"A": (0, 0, 255), "B": (0, 255, 0), "C": (255, 0, 0),
-			"D": (0, 255, 255), "E": (255, 255, 0)}
-		color = colors.get(entry["choice"], (200, 200, 200))
-		cv2.circle(debug, (px, py), radius, color, 1)
-	# draw student ID bubbles
-	id_coords = omr_utils.template_loader.get_all_student_id_coords(template)
-	for entry in id_coords:
-		px, py = omr_utils.template_loader.to_pixels(entry["norm_x"], entry["norm_y"], w, h)
-		cv2.circle(debug, (px, py), radius, (255, 0, 255), 1)
-	return debug

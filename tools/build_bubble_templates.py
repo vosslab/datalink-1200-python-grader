@@ -15,6 +15,7 @@ Usage:
 # Standard Library
 import os
 import json
+import time
 import glob
 import subprocess
 import argparse
@@ -108,12 +109,12 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 		gray, template)
 	try:
 		slot_map = omr_utils.slot_map.SlotMap(raw_transform, template)
-		geom = slot_map.geom()
+		measure_cfg = slot_map.measure_cfg()
 	except ValueError as exc:
 		print(f"    SKIP: {exc}")
 		return {}
-	print(f"    anchor geometry: row_pitch={geom['row_pitch']:.1f}px"
-		f" col_pitch={geom['col_pitch']:.1f}px")
+	print(f"    anchor geometry: row_pitch={measure_cfg['row_pitch']:.1f}px"
+		f" col_pitch={measure_cfg['col_pitch']:.1f}px")
 	# iterate all question/choice slots directly via SlotMap
 	choices = template["answers"]["choices"]
 	num_questions = int(template["answers"]["num_questions"])
@@ -122,7 +123,6 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 	attempted = 0
 	extracted = 0
 	skipped_bounds = 0
-	skipped_quality = 0
 	for q_num in range(1, num_questions + 1):
 		for choice in choices:
 			attempted += 1
@@ -131,11 +131,6 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 				gray, left_x, top_y, right_x, bot_y)
 			if roi is None:
 				skipped_bounds += 1
-				continue
-			# quality filter rejects off-page or failed geometry
-			quality = omr_utils.bubble_template_extractor._score_patch_quality(roi)
-			if quality < 10.0:
-				skipped_quality += 1
 				continue
 			extracted += 1
 			# save ROI to letter subdirectory
@@ -153,11 +148,10 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 				"choice": choice,
 				"center_x": int(cx),
 				"center_y": int(cy),
-				"quality": float(quality),
 				"roi_path": roi_path,
 			})
 	print(f"    slots: {attempted} attempted, {extracted} extracted, "
-		f"{skipped_bounds} bounds-skip, {skipped_quality} quality-skip")
+		f"{skipped_bounds} bounds-skip")
 	return rois_by_letter
 
 
@@ -183,16 +177,19 @@ def _build_templates(all_rois: dict, output_dir: str,
 			print(f"    SKIP: not enough ROIs for letter {letter}")
 			continue
 		# build template with alignment and outlier rejection
+		t_start = time.time()
 		template, mask, alignment_table = (
 			omr_utils.bubble_template_extractor._build_letter_template(
 				rois, letter))
+		t_elapsed = time.time() - t_start
 		if template is None:
 			print(f"    SKIP: template construction failed for {letter}")
 			continue
 		# count kept/rejected
 		kept = sum(1 for e in alignment_table if e["kept"])
 		rejected = len(alignment_table) - kept
-		print(f"    aligned: {kept} kept, {rejected} rejected")
+		print(f"    aligned: {kept} kept, {rejected} rejected"
+			f" ({t_elapsed:.1f}s)")
 		all_templates[letter] = template
 		all_masks[letter] = mask
 		# save QC montage

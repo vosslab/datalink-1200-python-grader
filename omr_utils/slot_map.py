@@ -2,7 +2,7 @@
 
 Builds pixel coordinates directly from timing mark anchors.
 Row centers come from left question marks, column centers from
-top footprint origin + choice_columns * fine column step.
+top footprint origin + choice_columns * local lattice column pitch.
 No YAML coordinates, no affine correction, no Sobel refinement.
 """
 
@@ -14,8 +14,6 @@ import math
 # Each K constant is the ratio of a bubble measurement to the
 # corresponding pitch (row_pitch for vertical, col_pitch for horizontal).
 # Estimated from curated scans with correct bracket overlay alignment.
-_K_HALF_HEIGHT = 0.1175        # bubble half-height / row_pitch
-_K_HALF_WIDTH = 0.665          # bubble half-width / col_pitch
 _K_CENTER_EXCLUSION = 0.244    # center letter zone / col_pitch
 _K_BRACKET_EDGE_H = 0.043     # bracket edge height / row_pitch
 _K_MEAS_INSET_V = 0.043       # vertical measurement inset / row_pitch
@@ -32,7 +30,7 @@ class SlotMap:
 	Built directly from estimate_anchor_transform() output and
 	template config. All pixel coordinates derive from the
 	timing-mark lattice: row y from left marks, column x from
-	top footprint origin + column index * fine step.
+	top footprint origin + column index * local lattice column pitch.
 
 	Args:
 		transform: dict from estimate_anchor_transform() containing
@@ -45,6 +43,7 @@ class SlotMap:
 		"""Initialize SlotMap from timing mark transform and template."""
 		# extract timing-mark lattice data
 		fp_x0 = float(transform.get("top_fp_x0", 0.0))
+		# local lattice column pitch (pixels per column)
 		fine_step = float(transform.get("top_col_spacing", 0.0))
 		if fp_x0 <= 0 or fine_step <= 0:
 			raise ValueError(
@@ -223,24 +222,59 @@ class SlotMap:
 		return (top_y, bot_y, left_x, right_x)
 
 	#============================================
-	def geom(self) -> dict:
-		"""Return pixel geometry dict with measurement zone constants.
+	def print_lattice_diagnostic(self) -> None:
+		"""Print column lattice positions, pitches, and answer mapping.
 
-		Replaces anchor_geom(). Computes center_exclusion,
-		measurement_inset_v/h from row_pitch/col_pitch using
-		the K-constants.
+		Diagnostic output for verifying that col_pitch and row_pitch
+		produce correct bubble positions on the printed form. Judges
+		correctness by whether lattice lines land on printed structures.
+		"""
+		# column role labels for the 15-column local lattice
+		col_labels = {
+			0: "Q#L", 1: "A", 2: "B", 3: "C", 4: "D", 5: "E",
+			6: "gap", 7: "Q#R", 8: "A", 9: "B", 10: "C", 11: "D", 12: "E",
+			13: "mrg", 14: "mrg",
+		}
+		# print column lattice positions
+		print("Column lattice (x = x0 + col * col_pitch):")
+		print(f"  {'col':>3}  {'x_px':>6}  role")
+		# compute fp_x0 from column 0 center: x0 = col_x[(left,A)] - 1*col_pitch
+		# since left A is at column index 1
+		fp_x0 = self._col_x[("left", "A")] - 1.0 * self._col_pitch
+		for col_idx in range(15):
+			x_px = fp_x0 + col_idx * self._col_pitch
+			label = col_labels.get(col_idx, str(col_idx))
+			print(f"  {col_idx:3d}  {x_px:6.1f}  {label}")
+		# print pitches and ratio
+		ratio = self._col_pitch / self._row_pitch if self._row_pitch > 0 else 0.0
+		print(f"\nPitches: col_pitch={self._col_pitch:.1f}px"
+			f"  row_pitch={self._row_pitch:.1f}px"
+			f"  ratio={ratio:.3f}")
+		# print concrete A-E positions for left and right sides
+		print("\nAnswer mapping:")
+		for side_label, side in [("left", "left"), ("right", "right")]:
+			parts = []
+			for choice in self._choices:
+				cx = self._col_x[(side, choice)]
+				parts.append(f"{choice}={cx:.1f}")
+			print(f"  {side_label}: {', '.join(parts)}")
+
+	#============================================
+	def measure_cfg(self) -> dict:
+		"""Return measurement constants derived from timing-mark spacing.
+
+		Provides dimensions for measuring within a bubble (Sobel search
+		extents, center exclusion, insets, validation thresholds).
+		Use SlotMap.roi_bounds() and SlotMap.center() for slot placement.
 
 		Returns:
-			pixel geometry dict with keys: half_width, half_height,
-			center_exclusion, bracket_edge_height, measurement_inset_v,
-			measurement_inset_h, refine_max_shift, refine_pad_v,
-			refine_pad_h, row_pitch, col_pitch
+			dict with keys: center_exclusion, bracket_edge_height,
+			measurement_inset_v, measurement_inset_h, refine_max_shift,
+			refine_pad_v, refine_pad_h, row_pitch, col_pitch
 		"""
 		rp = self._row_pitch
 		cp = self._col_pitch
-		geom = {
-			"half_width": _K_HALF_WIDTH * cp,
-			"half_height": _K_HALF_HEIGHT * rp,
+		cfg = {
 			"center_exclusion": _K_CENTER_EXCLUSION * cp,
 			"bracket_edge_height": _K_BRACKET_EDGE_H * rp,
 			"measurement_inset_v": _K_MEAS_INSET_V * rp,
@@ -251,4 +285,23 @@ class SlotMap:
 			"row_pitch": rp,
 			"col_pitch": cp,
 		}
-		return geom
+		return cfg
+
+	#============================================
+	def student_id_geom(self) -> dict:
+		"""Return pixel geometry dict for student ID bubble scoring.
+
+		Student-ID subsystem only. Extends measure_cfg() with half_width
+		and half_height needed by score_bubble_fast(). Answer-bubble code
+		should use measure_cfg() instead.
+
+		Returns:
+			dict with all measure_cfg keys plus half_width, half_height
+		"""
+		rp = self._row_pitch
+		cp = self._col_pitch
+		result = self.measure_cfg()
+		# dimensionless fractions for student-ID center-plus-box model
+		result["half_width"] = 0.665 * cp
+		result["half_height"] = 0.1175 * rp
+		return result

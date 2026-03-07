@@ -14,7 +14,6 @@ import cv2
 import numpy
 
 # local repo modules
-import omr_utils.template_loader
 import omr_utils.bubble_template_extractor
 
 
@@ -188,8 +187,9 @@ def match_bubble_masked(gray: numpy.ndarray, template_img: numpy.ndarray,
 
 #============================================
 def refine_row_by_template(gray: numpy.ndarray, templates: dict,
-	row_positions: dict, geom: dict, choices: list,
-	search_radius: int = 8, masks: dict = None) -> dict:
+	row_positions: dict, choices: list,
+	search_radius: int = 8, masks: dict = None,
+	slot_dims: dict = None) -> dict:
 	"""Refine all 5 choice positions in a question row using templates.
 
 	For each choice, uses the corresponding letter's pixel template to
@@ -201,10 +201,11 @@ def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 		gray: grayscale image
 		templates: dict mapping letter to 5X oversize template array
 		row_positions: dict mapping choice letter to (cx, cy) approx position
-		geom: pixel geometry dict for scaling templates
 		choices: list of choice letters ["A", "B", "C", "D", "E"]
 		search_radius: search radius in pixels
 		masks: optional dict mapping letter to mask array
+		slot_dims: dict mapping choice to (width, height) from
+			SlotMap.roi_bounds(); required for template scaling
 
 	Returns:
 		dict mapping choice letter to (refined_cx, refined_cy, confidence).
@@ -221,9 +222,17 @@ def refine_row_by_template(gray: numpy.ndarray, templates: dict,
 		if template_img is None:
 			refined[choice] = (cx, cy, 0.0)
 			continue
-		# scale 5X template to actual bubble size
+		# get slot dimensions from lattice bounds
+		if slot_dims is not None and choice in slot_dims:
+			sw, sh = slot_dims[choice]
+		else:
+			raise ValueError(
+				f"slot_dims missing for choice '{choice}': "
+				"SlotMap.roi_bounds() must provide dimensions"
+			)
+		# scale canonical template to actual slot size
 		scaled = omr_utils.bubble_template_extractor.scale_template_to_bubble(
-			template_img, geom)
+			template_img, sw, sh)
 		# use masked matching if mask is available
 		mask_img = None
 		if masks is not None:

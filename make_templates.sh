@@ -10,3 +10,5 @@ source source_me.sh
 python tools/build_bubble_templates.py \
 	-i scantrons/ \
 	-o output_bubble_templates/
+
+open config/bubble_templates/?.png

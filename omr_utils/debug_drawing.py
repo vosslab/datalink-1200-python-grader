@@ -1,5 +1,8 @@
 """Debug overlay drawing for OMR pipeline visualization."""
 
+# Standard Library
+import math
+
 # PIP3 modules
 import cv2
 import numpy
@@ -10,27 +13,9 @@ import omr_utils.timing_mark_anchors
 
 
 #============================================
-def _geom_bounds(cx: int, cy: int, geom: dict) -> tuple:
-	"""Compute integer pixel bounds from geom half dimensions.
-
-	Args:
-		cx: bubble center x in pixels
-		cy: bubble center y in pixels
-		geom: pixel geometry dict with half_width and half_height
-
-	Returns:
-		tuple of (top_y, bot_y, left_x, right_x) as integers
-	"""
-	top_y = int(cy - geom["half_height"])
-	bot_y = int(cy + geom["half_height"])
-	left_x = int(cx - geom["half_width"])
-	right_x = int(cx + geom["half_width"])
-	return (top_y, bot_y, left_x, right_x)
-
-
-#============================================
 def draw_answer_debug(image: numpy.ndarray, template: dict,
-	results: list, geom: dict, show_refine_shifts: bool = True) -> numpy.ndarray:
+	results: list, measure_cfg: dict,
+	slot_map: "omr_utils.slot_map.SlotMap") -> numpy.ndarray:
 	"""Draw color-coded rectangular bubble overlay on a registered image.
 
 	Uses semi-transparent filled rectangles so every detection zone is
@@ -47,8 +32,8 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 		image: BGR registered image
 		template: loaded template dictionary
 		results: list of answer dicts from read_answers
-		geom: pixel geometry dict from slot_map.geom()
-		show_refine_shifts: unused, kept for API compatibility
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
+		slot_map: SlotMap instance for lattice-based ROI bounds
 
 	Returns:
 		annotated copy of the image
@@ -59,14 +44,15 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 	h, w = debug.shape[:2]
 	choices = template["answers"]["choices"]
 	# use provided geometry for center exclusion and measurement insets
-	ce = geom["center_exclusion"]
-	mi_v = geom["measurement_inset_v"]
-	mi_h = geom["measurement_inset_h"]
+	ce = measure_cfg["center_exclusion"]
+	mi_v = measure_cfg["measurement_inset_v"]
+	mi_h = measure_cfg["measurement_inset_h"]
 	# define zone colors (BGR)
 	teal = (200, 128, 0)
 	orange = (0, 165, 255)
 	alpha = 0.3
 	for entry in results:
+		q_num = entry["question"]
 		positions = entry.get("positions", {})
 		edges = entry.get("edges", {})
 		for choice in choices:
@@ -78,8 +64,9 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 			if choice in edges:
 				top_y, bot_y, left_x, right_x = edges[choice]
 			else:
-				# fallback to geometry-based defaults
-				top_y, bot_y, left_x, right_x = _geom_bounds(px, py, geom)
+				# fallback to lattice-based ROI bounds
+				top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
+					q_num, choice)
 			# -- layer 1: teal filled measurement strips (alpha blended) --
 			# matches _compute_edge_mean: inset from detected edges
 			# left measurement strip
@@ -96,6 +83,7 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 	cv2.addWeighted(overlay, alpha, debug, 1.0 - alpha, 0, debug)
 	# draw outlines on top of the blended image (no alpha needed)
 	for entry in results:
+		q_num = entry["question"]
 		answer = entry["answer"]
 		flags = entry["flags"]
 		scores = entry["scores"]
@@ -109,7 +97,9 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 			if choice in edges:
 				top_y, bot_y, left_x, right_x = edges[choice]
 			else:
-				top_y, bot_y, left_x, right_x = _geom_bounds(px, py, geom)
+				# fallback to lattice-based ROI bounds
+				top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
+					q_num, choice)
 			# -- layer 3: orange center exclusion outline --
 			cv2.rectangle(debug,
 				(int(px - ce), int(top_y)),
@@ -165,7 +155,8 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 
 #============================================
 def draw_scored_overlay(image: numpy.ndarray, template: dict,
-	results: list, geom: dict) -> numpy.ndarray:
+	results: list, measure_cfg: dict,
+	slot_map: "omr_utils.slot_map.SlotMap") -> numpy.ndarray:
 	"""Draw minimal scoring overlay showing bubble status and confidence.
 
 	Shows filled/unfilled determination with confidence scores.
@@ -175,14 +166,15 @@ def draw_scored_overlay(image: numpy.ndarray, template: dict,
 		image: BGR registered image
 		template: loaded template dictionary
 		results: list of answer dicts from read_answers
-		geom: pixel geometry dict from slot_map.geom()
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
+		slot_map: SlotMap instance for lattice-based ROI bounds
 
 	Returns:
 		annotated copy of the image
 	"""
-	# reuse existing answer debug without shift vectors for cleaner output
-	scored = draw_answer_debug(image, template, results, geom,
-		show_refine_shifts=False)
+	# reuse existing answer debug for cleaner output
+	scored = draw_answer_debug(image, template, results, measure_cfg,
+		slot_map=slot_map)
 	return scored
 
 
@@ -230,9 +222,68 @@ def draw_lattice_crosshairs(image: numpy.ndarray,
 	return debug
 
 
+# column role labels for the 15-column local lattice
+_COLUMN_LABELS = {
+	0: "Q#L",
+	1: "A", 2: "B", 3: "C", 4: "D", 5: "E",
+	6: "gap",
+	7: "Q#R",
+	8: "A", 9: "B", 10: "C", 11: "D", 12: "E",
+	13: "mrg", 14: "mrg",
+}
+
+
+#============================================
+def draw_column_lattice(image: numpy.ndarray,
+	transform: dict, num_columns: int = 15) -> numpy.ndarray:
+	"""Draw vertical guide lines for logical columns 0 through num_columns-1.
+
+	Each line is drawn at x_i = fp_x0 + i * col_pitch and labeled with
+	its column index and role (Q#, A-E, gap, margin).
+
+	Args:
+		image: BGR image to annotate
+		transform: dict from estimate_anchor_transform containing
+			top_fp_x0 and top_col_spacing
+		num_columns: number of logical columns to draw (default 15)
+
+	Returns:
+		annotated copy of the image
+	"""
+	debug = image.copy()
+	h, w = debug.shape[:2]
+	fp_x0 = float(transform.get("top_fp_x0", 0.0))
+	col_pitch = float(transform.get("top_col_spacing", 0.0))
+	if fp_x0 <= 0 or col_pitch <= 0 or not math.isfinite(col_pitch):
+		return debug
+	# color scheme: answer cols cyan, Q# cols yellow, gap/margin gray
+	color_answer = (220, 220, 0)
+	color_qnum = (0, 220, 220)
+	color_gap = (128, 128, 128)
+	for i in range(num_columns):
+		x = int(round(fp_x0 + i * col_pitch))
+		if x < 0 or x >= w:
+			continue
+		label = _COLUMN_LABELS.get(i, str(i))
+		# pick color based on role
+		if label in ("A", "B", "C", "D", "E"):
+			color = color_answer
+		elif label.startswith("Q#"):
+			color = color_qnum
+		else:
+			color = color_gap
+		# draw vertical guide line
+		cv2.line(debug, (x, 0), (x, h), color, 1)
+		# draw label near top of image
+		cv2.putText(debug, f"{i}:{label}", (x + 2, 14),
+			cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
+	return debug
+
+
 #============================================
 def draw_combined_debug(image: numpy.ndarray, template: dict,
-	transform: dict, results: list, geom: dict) -> numpy.ndarray:
+	transform: dict, results: list, measure_cfg: dict,
+	slot_map: "omr_utils.slot_map.SlotMap") -> numpy.ndarray:
 	"""Draw combined debug overlay with all diagnostic layers.
 
 	Layers (bottom to top):
@@ -245,7 +296,8 @@ def draw_combined_debug(image: numpy.ndarray, template: dict,
 		template: loaded template dictionary
 		transform: dict from estimate_anchor_transform
 		results: list of answer dicts from read_answers
-		geom: pixel geometry dict from slot_map.geom()
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
+		slot_map: SlotMap instance for lattice-based ROI bounds
 
 	Returns:
 		annotated copy with all debug layers combined
@@ -257,6 +309,6 @@ def draw_combined_debug(image: numpy.ndarray, template: dict,
 	debug = omr_utils.timing_mark_anchors.draw_timing_mark_debug(
 		debug, transform)
 	# overlay answer bubbles with detection zones
-	debug = draw_answer_debug(debug, template, results, geom,
-		show_refine_shifts=False)
+	debug = draw_answer_debug(debug, template, results, measure_cfg,
+		slot_map=slot_map)
 	return debug

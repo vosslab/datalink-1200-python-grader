@@ -1,9 +1,121 @@
 # Changelog
 
+## 2026-03-07
+
+### Behavior or Interface Changes
+
+- Renamed `SlotMap.geom()` to `SlotMap.student_id_geom()` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Quarantines legacy half_width/half_height geometry to the student-ID subsystem only. Callers updated in [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py).
+
+### Fixes and Maintenance
+
+- Added "Student-ID subsystem only" docstring annotations to `score_bubble_fast()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) and `to_pixels()`, `get_bubble_radius_px()`, `get_student_id_coords()` in [omr_utils/template_loader.py](../omr_utils/template_loader.py).
+
+### Removals and Deprecations
+
+- Removed dead function `get_all_student_id_coords()` from [omr_utils/template_loader.py](../omr_utils/template_loader.py) (zero callers).
+- Removed unused `import omr_utils.template_loader` from [omr_utils/template_matcher.py](../omr_utils/template_matcher.py).
+
+### Behavior or Interface Changes
+
+- Renamed `SlotMap.geom()` answer-bubble path to `SlotMap.measure_cfg()` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). The new method returns measurement constants without `half_width`/`half_height`. The old `geom()` method is kept only for the student ID subsystem (`score_bubble_fast()`).
+- Removed `_K_HALF_WIDTH` and `_K_HALF_HEIGHT` module-level constants from [omr_utils/slot_map.py](../omr_utils/slot_map.py). The student ID path now uses inline literal values inside `geom()`.
+- Renamed `geom` parameter to `measure_cfg` in 8 functions in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): `_refine_bubble_edges_x()`, `_validate_bubble_rect()`, `_compute_bracket_edge_mean()`, `_compute_edge_mean()`, `_compute_dual_zone_means()`, `_stage_localize_rows()`, `_stage_measure_rows()`, `_stage_template_refine()`. `score_bubble_fast()` retains its `geom` parameter (student ID path, out of scope).
+- `_refine_bubble_edges_x()` now derives search half-width from `default_left`/`default_right` lattice bounds instead of `geom["half_width"]`.
+- `_validate_bubble_rect()` now derives expected dimensions from `fallback_bounds` instead of `geom["half_width"]`/`geom["half_height"]`.
+- Renamed `geom` parameter to `measure_cfg` in `draw_answer_debug()`, `draw_scored_overlay()`, `draw_combined_debug()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py).
+- Renamed `geom` local variable to `measure_cfg` in `process_single_image()` in [run_pipeline.py](../run_pipeline.py) and `_extract_rois_from_scan()` in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py).
+- Removed `half_h=` and `half_w=` from diagnostic print in `read_answers()`.
+
+### Behavior or Interface Changes
+
+- `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): `slot_map` parameter is now required (was `= None`). Removed the auto-build fallback that created a SlotMap from timing mark detection. Callers must provide a SlotMap.
+- `_stage_template_refine()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): `slot_map` parameter is now required. Removed `if slot_map is not None` guards; slot_map is always used directly.
+- `_validate_bubble_rect()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py): `fallback_bounds` parameter is now required (no default). Removed the dead else branch that returned edges unchanged when no fallback was available.
+- `draw_answer_debug()`, `draw_scored_overlay()`, `draw_combined_debug()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py): `slot_map` parameter is now required (was `= None`). Removed `show_refine_shifts` dead parameter from `draw_answer_debug()`.
+- `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py): when left footprint fitting fails, prints a warning and sets `left_confidence` to 0.0 with empty marks instead of silently storing raw candidates as structured marks. SlotMap rejects zero-confidence transforms downstream.
+
+### Removals and Deprecations
+
+- Deleted `_default_transform()` from [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). Created an identity transform with zero confidence that `SlotMap` immediately rejects. Replaced with inline dict in `estimate_anchor_transform()`.
+- Deleted `load_templates()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Superseded by `load_templates_and_masks()` in the same file; zero callers in the codebase.
+- Deleted `draw_registered_debug()` from [omr_utils/image_registration.py](../omr_utils/image_registration.py). Zero callers; its job is now done by `draw_lattice_crosshairs()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) which uses SlotMap properly.
+- Removed unused `import omr_utils.timing_mark_anchors` from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py).
+
 ## 2026-03-06
 
 ### Additions and New Features
 
+- Added `print_lattice_diagnostic()` method to `SlotMap` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Prints column lattice positions, pitches, ratio, and concrete A-E answer positions for both left and right sides. Called from `read_answers()` for stride verification.
+- Added A/B stride diagnostic print in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). Shows raw `fp_spacing`, stride-1 and stride-3 `col_pitch` values to help identify the correct `footprint_column_stride` setting.
+
+### Behavior or Interface Changes
+
+- `draw_answer_debug()`, `draw_scored_overlay()`, and `draw_combined_debug()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) now accept an optional `slot_map` parameter. Fallback ROI bounds use `slot_map.roi_bounds()` instead of the old center-plus-symmetric-box `_geom_bounds()`.
+- `draw_registered_debug()` in [omr_utils/image_registration.py](../omr_utils/image_registration.py) now accepts an optional `slot_map` parameter and uses `SlotMap.center()` for answer bubble overlay instead of normalized coordinates from `get_all_question_coords()`.
+- `SlotMap.geom()` docstring clarified: provides measurement dimensions (Sobel extents, insets, thresholds), not slot positions or ROI bounds. Use `roi_bounds()` and `center()` for placement.
+- `scale_template_to_bubble()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) now takes explicit `slot_width` and `slot_height` from `SlotMap.roi_bounds()` instead of `geom["half_width"]` / `geom["half_height"]`. Removes the last direct dependency on center-plus-box for template scaling.
+- `refine_row_by_template()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py) removed `geom` parameter from signature. Template scaling uses `slot_dims` exclusively; `geom` was unused in the function body.
+- `_refine_bubble_edges_x()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) now requires `default_left` and `default_right` parameters (no `None` default). Removes the center-plus-box fallback that computed `cx +/- half_width` when no explicit bounds were passed. The only caller always provides lattice bounds from `SlotMap.roi_bounds()`.
+- `_validate_bubble_rect()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) no longer computes fallback bounds from `geom["half_width"]` / `geom["half_height"]`. When `fallback_bounds` is None, returns detected edges unchanged instead of reconstructing center-plus-box.
+- `_stage_template_refine()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) no longer falls back to `geom["half_height"]` for y-bound recomputation when `slot_map` is None. Lattice bounds are always used when slot_map is available; the else branch is removed.
+- `_stage_template_refine()` now computes `slot_dims` from `SlotMap.roi_bounds()` and passes them to `refine_row_by_template()` for lattice-aware template scaling.
+
+### Removals and Deprecations
+
+- Deleted `_refine_bubble_edges_y()` from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Dead code (90 lines) -- never called anywhere in the codebase. The main pipeline uses lattice y-positions from `SlotMap` and optionally refines via NCC template matching.
+- Removed `_geom_bounds()` from [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Was the legacy center-plus-symmetric-box worldview that cascaded wrong dimensions when `col_pitch` was incorrect.
+- Removed `get_bubble_coords()` and `get_all_question_coords()` from [omr_utils/template_loader.py](../omr_utils/template_loader.py). Answer bubble positions now come exclusively from `SlotMap` lattice geometry, not normalized YAML coordinates.
+- Removed dead functions `_compute_shape_from_v1_geometry()` and `_validate_v2_shape()` from [omr_utils/template_loader.py](../omr_utils/template_loader.py). No caller existed for either function.
+- Removed `import copy` from [omr_utils/template_loader.py](../omr_utils/template_loader.py); `migrate_template_to_v2()` simplified to validate-and-stamp without deepcopy.
+- Removed dead YAML fields `bubble_shape:` / `aspect_ratio:` and `expected_count: 60` from [config/dl1200_template.yaml](../config/dl1200_template.yaml). No runtime code read these fields.
+- Removed `half_width`/`half_height` fallback in `refine_row_by_template()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Now raises `ValueError` if `slot_dims` is missing, since `SlotMap.roi_bounds()` always provides dimensions.
+- Removed `expected_count` from test fixtures in [tests/test_timing_mark_anchors.py](../tests/test_timing_mark_anchors.py). `_make_template()` no longer accepts `left_count`/`top_count` parameters.
+
+### Decisions and Failures
+
+- Root cause of wrong bubble ROI aspect ratio identified: `_geom_bounds()` built symmetric boxes from `geom["half_width"]` / `geom["half_height"]`, which depended on `col_pitch`. If `footprint_column_stride` divides `fp_spacing` incorrectly, the cascade makes bubbles appear ~3 wide by 5 tall instead of ~6 wide by 1 tall. Fix: use `slot_map.roi_bounds()` (lattice midpoints) instead of symmetric half-dimension boxes.
+- `score_bubble_fast()` still uses center-plus-box for edge positions, but is only called by `student_id_reader.py` for student ID bubbles (normalized coords, out of scope). Not a problem for answer bubble geometry.
+- `_compute_shape_from_v1_geometry()` and `bubble_shape` validation were dead code kept for v1-to-v2 migration backward compat. Removed along with `_validate_v2_shape()`, `bubble_shape`, `aspect_ratio`, and `expected_count` YAML fields. See removals below.
+
+### Removals and Deprecations
+
+- Removed hidden 53-column global grid from timing mark detection. Replaced `expected_count: 53` in [config/dl1200_template.yaml](../config/dl1200_template.yaml) with `footprint_column_stride: 3`. Added `answer_lattice_columns: 15` and `q_col` fields to left/right columns.
+- Deleted `_estimate_axis_transform()`, `mark_index_to_normalized()`, and `normalized_to_mark_index()` from [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). These computed 53-grid indices that are no longer needed.
+- Deleted `_ensure_mark_indices()`, `_ensure_coordinates()`, and `migrate_template_to_v3()` from [omr_utils/template_loader.py](../omr_utils/template_loader.py). The v3 mark-index concept was built on the 53-grid. `load_template()` now stops at v2.
+- Removed `import omr_utils.timing_mark_anchors` from [omr_utils/template_loader.py](../omr_utils/template_loader.py). No longer needed after v3 removal.
+- Deleted `TestMarkIndexConversion` and `test_axis_fit_is_stable_when_edge_marks_are_missing` from [tests/test_timing_mark_anchors.py](../tests/test_timing_mark_anchors.py). Tests for deleted functions.
+- Removed `top_col_ratio` from the transform dict in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py).
+
+### Behavior or Interface Changes
+
+- `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py) now derives `top_col_spacing` as `fp_spacing / footprint_column_stride` (local lattice column pitch) instead of dividing by a rounded ratio to the 53-grid step. The `top_fp_x0` and `top_col_spacing` keys remain unchanged for downstream consumers (SlotMap, debug drawing).
+- `get_bubble_coords()` in [omr_utils/template_loader.py](../omr_utils/template_loader.py) now computes normalized x from `choice_columns` integer indices and `answer_lattice_columns` instead of reading a precomputed `choice_x` dict.
+
+### Additions and New Features
+
+- Created [docs/OMR_GEOMETRY_CONTRACT.md](../docs/OMR_GEOMETRY_CONTRACT.md). Defines the geometry contract for the OMR system: timing marks define the coordinate system, SlotMap is the single authority, 15-column local lattice is the only column scheme, no fixed pixel constants allowed.
+
+### Decisions and Failures
+
+- The 53-grid was a hidden intermediate representation that mapped footprint spacing to a global column index. After YAML was corrected to local lattice indices, the 53-grid step caused wrong column spacing. Replacing it with a direct `footprint_column_stride` divisor eliminates the mismatch.
+
+### Fixes and Maintenance
+
+- Fixed `choice_columns` in [config/dl1200_template.yaml](../config/dl1200_template.yaml) to use correct local 15-column lattice indices. Left A-E changed from sparse 53-grid indices (5, 8, 10, 13, 16) to consecutive local columns (1, 2, 3, 4, 5). Right A-E changed from (24, 27, 30, 33, 36) to (8, 9, 10, 11, 12). The old sparse indices caused SlotMap to place ROI centers in the wrong columns, with raw A crops landing in the Q# gutter instead of the A bubble slot.
+
+### Additions and New Features
+
+- Added `draw_column_lattice()` to [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Draws labeled vertical guide lines for all 15 logical columns (0-14) using `fp_x0 + i * col_pitch`. Labels each column with its index and role (Q#, A-E, gap, margin) for visual verification of the column lattice alignment.
+
+### Removals and Deprecations
+
+- Deleted `_score_patch_quality()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Contrast-based quality filter assumed good ROIs have dark bracket edges and bright interiors -- a circular prior that rejected 398-496 of 500 slots per scan, starving the template builder. The downstream `_build_letter_template()` already rejects outliers via NCC scoring, making this pre-filter redundant.
+- Removed quality gate from `_extract_rois_from_scan()` in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py). Bounds-skip remains as the only valid rejection. Expected yield increases from ~426 total ROIs across 9 scans to ~500 per scan.
+- Removed `quality` field from ROI metadata JSON output.
+
+### Additions and New Features
+
+- Added timing and progress reports to template construction pipeline. `_find_medoid_roi()` prints progress every 200 candidates, `_build_letter_template()` prints stage markers with elapsed time, and `_build_templates()` includes total elapsed seconds in the "aligned" summary line.
 - Added `extract_roi_from_bounds()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Bounds-based ROI extraction primitive that accepts explicit lattice bounds from `SlotMap.roi_bounds()`, adds proportional padding, clips to image edges. Replaces center+geom symmetric cropping.
 - Created [omr_utils/timing_marks_left.py](../omr_utils/timing_marks_left.py) with 6 left-side timing mark detection functions extracted from `timing_mark_anchors.py`.
 - Created [omr_utils/timing_marks_top.py](../omr_utils/timing_marks_top.py) with 6 top-side timing mark detection functions extracted from `timing_mark_anchors.py`.

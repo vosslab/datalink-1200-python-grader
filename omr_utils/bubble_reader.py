@@ -7,111 +7,18 @@ import numpy
 # local repo modules
 import omr_utils.slot_map
 import omr_utils.template_matcher
-import omr_utils.timing_mark_anchors
 
-
-#============================================
-def _refine_bubble_edges_y(gray: numpy.ndarray, cx: int, cy: int,
-	geom: dict, default_top: int = None, default_bot: int = None) -> tuple:
-	"""Refine vertical bubble position by detecting top and bottom bracket edges.
-
-	Extracts a vertical strip ROI around the template position and uses
-	Sobel-y to find the top and bottom bracket arms (strong horizontal
-	edges). Returns the refined center plus detected edge positions.
-
-	Includes edge separation validation: rejects edge pairs whose
-	separation deviates more than 40% from expected bubble height.
-	This prevents column-header edges from being mistaken for bubble
-	edges at positions like Q1 and Q51.
-
-	Args:
-		gray: grayscale image (0=black, 255=white)
-		cx: bubble center x in pixels (template estimate)
-		cy: bubble center y in pixels (template estimate)
-		geom: pixel geometry dict
-		default_top: fallback top y (if None, computed from geom)
-		default_bot: fallback bottom y (if None, computed from geom)
-
-	Returns:
-		tuple of (refined_cy, top_y, bot_y) as integers;
-		falls back to defaults if edges are not clearly found
-	"""
-	h, w = gray.shape
-	hh = geom["half_height"]
-	hw = geom["half_width"]
-	pad = geom["refine_pad_v"]
-	# max shift from geometry; no hardcoded cap
-	max_shift = float(geom["refine_max_shift"])
-	# default edge positions from caller or computed from geom
-	if default_top is None:
-		default_top = int(cy - hh)
-	if default_bot is None:
-		default_bot = int(cy + hh)
-	# cap search extent so ROI does not overlap adjacent questions
-	search_extent = min(hh + pad, pad * 2)
-	y1 = max(0, int(cy - search_extent))
-	y2 = min(h, int(cy + search_extent))
-	# horizontal ROI: full bubble width
-	x1 = max(0, int(cx - hw))
-	x2 = min(w, int(cx + hw))
-	# guard against zero-size ROI
-	if y2 <= y1 or x2 <= x1:
-		return (cy, default_top, default_bot)
-	roi = gray[y1:y2, x1:x2]
-	# apply Sobel-y to detect horizontal edges (top/bottom bracket arms)
-	sobel_y = cv2.Sobel(roi, cv2.CV_64F, 0, 1, ksize=3)
-	# collapse horizontally: mean absolute gradient per row
-	row_energy = numpy.mean(numpy.abs(sobel_y), axis=1)
-	# find the two strongest energy peaks (top and bottom bracket arms)
-	# use small min_separation to avoid suppressing the real second peak;
-	# physical brackets are ~12px apart, peak suppression just avoids double-count
-	min_separation = int(max(4, hh // 3))
-	min_edge_strength = 15.0
-	# find the strongest peak
-	peak1_idx = int(numpy.argmax(row_energy))
-	peak1_val = float(row_energy[peak1_idx])
-	if peak1_val < min_edge_strength:
-		return (cy, default_top, default_bot)
-	# zero out rows near peak1 and find second peak
-	suppressed = row_energy.copy()
-	sup_lo = max(0, peak1_idx - min_separation)
-	sup_hi = min(len(suppressed), peak1_idx + min_separation + 1)
-	suppressed[sup_lo:sup_hi] = 0.0
-	peak2_idx = int(numpy.argmax(suppressed))
-	peak2_val = float(suppressed[peak2_idx])
-	if peak2_val < min_edge_strength:
-		return (cy, default_top, default_bot)
-	# top and bottom bracket arms (order by position)
-	top_idx = min(peak1_idx, peak2_idx)
-	bot_idx = max(peak1_idx, peak2_idx)
-	# edge separation validation: reject pairs far outside expected range
-	# for measurement padding, so accept separations from 40% to 150% of expected
-	expected_separation = hh * 2
-	actual_separation = bot_idx - top_idx
-	if expected_separation > 0:
-		deviation = abs(actual_separation - expected_separation) / expected_separation
-		if deviation >= 0.6:
-			# likely column header or adjacent row edges, not bubble
-			return (cy, default_top, default_bot)
-	# convert from ROI coordinates back to image coordinates
-	refined_top = y1 + top_idx
-	refined_bot = y1 + bot_idx
-	refined_cy = (refined_top + refined_bot) // 2
-	# sanity check: reject large center shifts
-	if abs(refined_cy - cy) > max_shift:
-		return (cy, default_top, default_bot)
-	return (refined_cy, refined_top, refined_bot)
 
 
 #============================================
 def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
-	top_y: int, bot_y: int, geom: dict,
-	default_left: int = None, default_right: int = None) -> tuple:
+	top_y: int, bot_y: int, measure_cfg: dict,
+	default_left: int, default_right: int) -> tuple:
 	"""Refine horizontal bubble position by detecting left and right bracket edges.
 
 	Uses detected top_y/bot_y for a precise vertical ROI instead of
-	relying on the coarse template half_height. Includes separation
-	validation to reject false edge pairs.
+	relying on coarse estimates. Includes separation validation to
+	reject false edge pairs.
 
 	Args:
 		gray: grayscale image (0=black, 255=white)
@@ -119,27 +26,23 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 		cy: bubble center y in pixels (already y-refined)
 		top_y: detected top edge y position
 		bot_y: detected bottom edge y position
-		geom: pixel geometry dict
-		default_left: fallback left x (if None, computed from geom)
-		default_right: fallback right x (if None, computed from geom)
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
+		default_left: fallback left x from SlotMap lattice bounds
+		default_right: fallback right x from SlotMap lattice bounds
 
 	Returns:
 		tuple of (refined_cx, left_x, right_x) as integers;
 		falls back to defaults if edges are not clearly found
 	"""
 	h, w = gray.shape
-	hw = geom["half_width"]
-	hpad = geom["refine_pad_h"]
+	# derive search half-width from lattice bounds
+	slot_half_w = (default_right - default_left) / 2.0
+	hpad = measure_cfg["refine_pad_h"]
 	# max shift from geometry; no hardcoded cap
-	max_shift = float(geom["refine_max_shift"])
-	# default edge positions from caller or computed from geom
-	if default_left is None:
-		default_left = int(cx - hw)
-	if default_right is None:
-		default_right = int(cx + hw)
-	# horizontal ROI: bubble width + padding on each side
-	x1 = max(0, int(cx - hw - hpad))
-	x2 = min(w, int(cx + hw + hpad))
+	max_shift = float(measure_cfg["refine_max_shift"])
+	# horizontal ROI: slot width + padding on each side
+	x1 = max(0, int(cx - slot_half_w - hpad))
+	x2 = min(w, int(cx + slot_half_w + hpad))
 	# vertical ROI: use detected top/bot edges for precise bounds
 	ry1 = max(0, int(top_y))
 	ry2 = min(h, int(bot_y))
@@ -153,7 +56,7 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 	col_energy = numpy.mean(numpy.abs(sobel_x), axis=0)
 	# find the two strongest energy peaks (left and right bracket arms)
 	# small suppression to avoid double-counting the same edge
-	min_separation = int(max(4, hw // 3))
+	min_separation = int(max(4, slot_half_w // 3))
 	min_edge_strength = 15.0
 	# find the strongest peak
 	peak1_idx = int(numpy.argmax(col_energy))
@@ -176,7 +79,7 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 	# x-edges use a tight 30% threshold because internal letter strokes
 	# (e.g. the vertical bars in 'E' and 'C') produce strong Sobel peaks
 	# that create half-width rectangles on lower-quality images
-	expected_separation = hw * 2
+	expected_separation = slot_half_w * 2
 	actual_separation = right_idx - left_idx
 	if expected_separation > 0:
 		deviation = abs(actual_separation - expected_separation) / expected_separation
@@ -197,8 +100,15 @@ def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
 	radius: int, geom: dict) -> float:
 	"""Score a single bubble using bracket-edge dark reference.
 
-	For standalone use (single bubble). The primary scoring path is
-	read_answers() which uses self-referencing scoring across the row.
+	Student-ID subsystem only. For standalone use (single bubble).
+	The primary scoring path is read_answers() which uses
+	self-referencing scoring across the row.
+
+	Note: this function uses center-plus-box positioning (cx +/- hw,
+	cy +/- hh) because it serves the student ID subsystem, which uses
+	normalized coordinates and does not have a SlotMap. Answer bubble
+	scoring goes through read_answers() -> _stage_measure_rows() which
+	uses lattice bounds from SlotMap instead.
 
 	Uses the dark printed bracket edges (top/bottom borders) as a
 	reference. On unfilled bubbles, the measurement zone is bright
@@ -211,7 +121,7 @@ def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
 		cx: bubble center x in pixels
 		cy: bubble center y in pixels
 		radius: bubble radius in pixels (used for bounds checking only)
-		geom: optional pixel geometry dict; uses defaults if None
+		geom: pixel geometry dict with half_width and half_height
 
 	Returns:
 		fill score (higher = more likely filled, range ~0.0 to 1.0).
@@ -263,13 +173,13 @@ def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
 
 #============================================
 def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
-	cx: int, cy: int, geom: dict,
-	fallback_bounds: tuple = None) -> tuple:
+	cx: int, cy: int, measure_cfg: dict,
+	fallback_bounds: tuple) -> tuple:
 	"""Validate detected bubble rectangle against expected area and aspect ratio.
 
 	If the detected rectangle deviates too far from expected dimensions,
-	resets to fallback bounds. Prevents half-width or half-height
-	detections from passing through to measurement.
+	resets to lattice fallback bounds. Prevents partial detections from
+	passing through to measurement.
 
 	Args:
 		top_y: detected top edge y
@@ -278,18 +188,18 @@ def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
 		right_x: detected right edge x
 		cx: template center x
 		cy: refined center y
-		geom: pixel geometry dict
-		fallback_bounds: optional (top_y, bot_y, left_x, right_x) to use
-			on validation failure; if None, computed from geom
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
+		fallback_bounds: (top_y, bot_y, left_x, right_x) from
+			SlotMap.roi_bounds(); always used as lattice fallback
 
 	Returns:
 		validated (top_y, bot_y, left_x, right_x, cx_out) tuple;
 		cx_out may differ from cx if edges were kept
 	"""
-	hw = geom["half_width"]
-	hh = geom["half_height"]
-	expected_w = hw * 2
-	expected_h = hh * 2
+	# derive expected dimensions from lattice fallback bounds
+	fb_top, fb_bot, fb_left, fb_right = fallback_bounds
+	expected_w = fb_right - fb_left
+	expected_h = fb_bot - fb_top
 	det_w = right_x - left_x
 	det_h = bot_y - top_y
 	# check width and height deviations independently (relaxed for affine)
@@ -309,23 +219,14 @@ def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
 		# edges are reasonable, keep them
 		cx_out = (left_x + right_x) // 2
 		return (top_y, bot_y, left_x, right_x, cx_out)
-	# fall back to provided bounds or compute from geom
-	if fallback_bounds is not None:
-		fb_top, fb_bot, fb_left, fb_right = fallback_bounds
-	else:
-		hh = geom["half_height"]
-		hw = geom["half_width"]
-		fb_top = int(cy - hh)
-		fb_bot = int(cy + hh)
-		fb_left = int(cx - hw)
-		fb_right = int(cx + hw)
+	# fall back to lattice bounds
 	return (fb_top, fb_bot, fb_left, fb_right, cx)
 
 
 #============================================
 def _compute_bracket_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 	top_y: int, bot_y: int, left_x: int, right_x: int,
-	geom: dict) -> float:
+	measure_cfg: dict) -> float:
 	"""Compute mean brightness of the top and bottom bracket edge strips.
 
 	Measures the dark printed bracket borders at the top and bottom of
@@ -341,7 +242,7 @@ def _compute_bracket_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 		bot_y: detected bottom edge y position
 		left_x: detected left edge x position
 		right_x: detected right edge x position
-		geom: pixel geometry dict
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
 
 	Returns:
 		average brightness of bracket edge strips (0-255 scale),
@@ -350,8 +251,8 @@ def _compute_bracket_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 	h, w = gray.shape
 	if cx < 0 or cy < 0 or cx >= w or cy >= h:
 		return -1.0
-	ce = geom["center_exclusion"]
-	beh = geom["bracket_edge_height"]
+	ce = measure_cfg["center_exclusion"]
+	beh = measure_cfg["bracket_edge_height"]
 	# horizontal bounds: left and right strips excluding center letter
 	lx1 = max(0, left_x)
 	lx2 = max(0, cx - ce)
@@ -381,10 +282,10 @@ def _compute_bracket_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 #============================================
 def _compute_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 	top_y: int, bot_y: int, left_x: int, right_x: int,
-	geom: dict) -> float:
+	measure_cfg: dict) -> float:
 	"""Compute mean brightness from dual left/right measurement zones."""
 	left_mean, right_mean = _compute_dual_zone_means(
-		gray, cx, cy, top_y, bot_y, left_x, right_x, geom)
+		gray, cx, cy, top_y, bot_y, left_x, right_x, measure_cfg)
 	if left_mean < 0 or right_mean < 0:
 		return -1.0
 	edge_mean = (left_mean + right_mean) / 2.0
@@ -394,7 +295,7 @@ def _compute_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 #============================================
 def _compute_dual_zone_means(gray: numpy.ndarray, cx: int, cy: int,
 	top_y: int, bot_y: int, left_x: int, right_x: int,
-	geom: dict) -> tuple:
+	measure_cfg: dict) -> tuple:
 	"""Compute left and right measurement-zone means separately.
 
 	This function preserves the dual-zone model explicitly so the
@@ -407,9 +308,9 @@ def _compute_dual_zone_means(gray: numpy.ndarray, cx: int, cy: int,
 	h, w = gray.shape
 	if cx < 0 or cy < 0 or cx >= w or cy >= h:
 		return (-1.0, -1.0)
-	ce = geom["center_exclusion"]
-	mi_v = geom["measurement_inset_v"]
-	mi_h = geom["measurement_inset_h"]
+	ce = measure_cfg["center_exclusion"]
+	mi_v = measure_cfg["measurement_inset_v"]
+	mi_h = measure_cfg["measurement_inset_h"]
 	# left edge strip: inset from detected left edge to center exclusion
 	lx1 = max(0, left_x + mi_h)
 	lx2 = max(0, cx - ce)
@@ -476,7 +377,7 @@ def _find_adaptive_threshold(spreads: list,
 
 #============================================
 def _stage_localize_rows(gray: numpy.ndarray, template: dict,
-	geom: dict, slot_map: "omr_utils.slot_map.SlotMap") -> list:
+	measure_cfg: dict, slot_map: "omr_utils.slot_map.SlotMap") -> list:
 	"""Localize bubble rows using pure lattice positions from SlotMap.
 
 	No Sobel y-refinement. No neighbor correction. No linearity check.
@@ -485,7 +386,7 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 	Args:
 		gray: grayscale image
 		template: loaded template dictionary
-		geom: pixel geometry dict from slot_map.geom()
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
 		slot_map: SlotMap instance (single geometry authority)
 
 	Returns:
@@ -517,7 +418,7 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 
 #============================================
 def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
-	template: dict, geom: dict,
+	template: dict, measure_cfg: dict,
 	slot_map: "omr_utils.slot_map.SlotMap") -> tuple:
 	"""Refine horizontal edges and compute per-choice measurements.
 
@@ -528,7 +429,7 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 		gray: grayscale image
 		raw_data: list of per-question choice dicts
 		template: loaded template dictionary
-		geom: pixel geometry dict
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
 		slot_map: SlotMap instance for lattice bounds
 
 	Returns:
@@ -556,19 +457,19 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 			_, _, def_left, def_right = lat_bounds
 			# refine horizontal edges within the lattice ROI
 			refined_cx, left_x, right_x = _refine_bubble_edges_x(
-				gray, px, refined_cy, top_y, bot_y, geom,
+				gray, px, refined_cy, top_y, bot_y, measure_cfg,
 				default_left=def_left, default_right=def_right)
 			q_choices[choice]["refined_cx"] = refined_cx
 			# validate the detected rectangle
 			top_y, bot_y, left_x, right_x, refined_cx = (
 				_validate_bubble_rect(
 					top_y, bot_y, left_x, right_x,
-					px, refined_cy, geom,
+					px, refined_cy, measure_cfg,
 					fallback_bounds=lat_bounds))
 			# measure brightness in the measurement zones
 			edge_means[choice] = _compute_edge_mean(
 				gray, refined_cx, refined_cy,
-				top_y, bot_y, left_x, right_x, geom)
+				top_y, bot_y, left_x, right_x, measure_cfg)
 			positions[choice] = (refined_cx, refined_cy)
 			edges[choice] = (top_y, bot_y, left_x, right_x)
 		all_edge_means.append(edge_means)
@@ -625,9 +526,9 @@ def _stage_decide_answers(all_edge_means: list, all_positions: list,
 
 #============================================
 def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
-	template: dict, geom: dict, bubble_templates: dict,
-	bubble_masks: dict = None,
-	slot_map: "omr_utils.slot_map.SlotMap" = None) -> None:
+	template: dict, measure_cfg: dict, bubble_templates: dict,
+	slot_map: "omr_utils.slot_map.SlotMap",
+	bubble_masks: dict = None) -> None:
 	"""Optional template-matching refinement pass on localized rows.
 
 	Uses NCC to refine bubble x and y positions by matching pixel
@@ -641,26 +542,33 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 		gray: grayscale image
 		raw_data: list of per-question choice dicts from _stage_localize_rows
 		template: loaded template dictionary
-		geom: pixel geometry dict
+		measure_cfg: measurement constants from SlotMap.measure_cfg()
 		bubble_templates: dict mapping letter to 5X oversize template array
 		bubble_masks: optional dict mapping letter to mask array
-		slot_map: SlotMap instance for lattice bounds
+		slot_map: SlotMap instance for lattice bounds (required)
 	"""
 	choices = template["answers"]["choices"]
 	# require high confidence for NCC-driven position updates
 	high_confidence = 0.45
 	for q_choices in raw_data:
-		# build position dict for this row
+		# build position dict and slot dimensions for this row
 		row_positions = {}
+		slot_dims = {}
 		for choice in choices:
 			cd = q_choices[choice]
 			row_positions[choice] = (cd["px"], cd["refined_cy"])
+			# compute slot dimensions from lattice bounds
+			q_num = cd["q_num"]
+			lat_top, lat_bot, lat_left, lat_right = (
+				slot_map.roi_bounds(q_num, choice))
+			slot_dims[choice] = (
+				lat_right - lat_left, lat_bot - lat_top)
 		# run NCC refinement (masked if masks available)
 		refined = omr_utils.template_matcher.refine_row_by_template(
-			gray, bubble_templates, row_positions, geom, choices,
-			masks=bubble_masks)
+			gray, bubble_templates, row_positions, choices,
+			masks=bubble_masks, slot_dims=slot_dims)
 		# update x and y positions when confidence is high and shift is small
-		max_shift = geom["refine_max_shift"]
+		max_shift = measure_cfg["refine_max_shift"]
 		for choice in choices:
 			if choice not in refined:
 				continue
@@ -678,24 +586,19 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 			dy = abs(rcy - cd["refined_cy"])
 			if dy <= max_shift:
 				cd["refined_cy"] = rcy
-				q_num = cd.get("q_num", 0)
-				if slot_map is not None and q_num > 0:
-					lat_top, lat_bot, _, _ = slot_map.roi_bounds(
-						q_num, choice)
-					# shift lattice bounds by the y offset
-					lat_cy = slot_map.row_center(q_num)
-					y_offset = rcy - lat_cy
-					cd["top_y"] = lat_top + y_offset
-					cd["bot_y"] = lat_bot + y_offset
-				else:
-					hh = geom["half_height"]
-					cd["top_y"] = int(rcy - hh)
-					cd["bot_y"] = int(rcy + hh)
+				q_num = cd["q_num"]
+				lat_top, lat_bot, _, _ = slot_map.roi_bounds(
+					q_num, choice)
+				# shift lattice bounds by the y offset
+				lat_cy = slot_map.row_center(q_num)
+				y_offset = rcy - lat_cy
+				cd["top_y"] = lat_top + y_offset
+				cd["bot_y"] = lat_bot + y_offset
 
 
 #============================================
 def read_answers(image: numpy.ndarray, template: dict,
-	slot_map: "omr_utils.slot_map.SlotMap" = None,
+	slot_map: "omr_utils.slot_map.SlotMap",
 	multi_gap: float = 0.03, bubble_templates: dict = None,
 	bubble_masks: dict = None) -> list:
 	"""Read all 100 answers from a registered scantron image.
@@ -712,8 +615,7 @@ def read_answers(image: numpy.ndarray, template: dict,
 	Args:
 		image: BGR registered image
 		template: loaded template dictionary
-		slot_map: SlotMap instance (single geometry authority); if None,
-			builds one from timing mark detection
+		slot_map: SlotMap instance (single geometry authority, required)
 		multi_gap: min spread gap between top two scores for MULTIPLE flag
 		bubble_templates: optional dict of pixel templates for NCC refinement;
 			if None, attempts to load from config/bubble_templates/
@@ -730,20 +632,15 @@ def read_answers(image: numpy.ndarray, template: dict,
 	# light blur to reduce noise while preserving fill signal
 	gray = cv2.GaussianBlur(gray, (3, 3), 0)
 	choices = template["answers"]["choices"]
-	# build SlotMap if caller did not provide one
-	if slot_map is None:
-		raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
-			gray, template)
-		slot_map = omr_utils.slot_map.SlotMap(raw_transform, template)
-	geom = slot_map.geom()
-	row_pitch = geom["row_pitch"]
-	col_pitch = geom["col_pitch"]
+	measure_cfg = slot_map.measure_cfg()
+	row_pitch = measure_cfg["row_pitch"]
+	col_pitch = measure_cfg["col_pitch"]
 	print(f"  slot_map geometry: row_pitch={row_pitch:.1f}px"
-		f" col_pitch={col_pitch:.1f}px"
-		f" half_h={geom['half_height']:.1f}"
-		f" half_w={geom['half_width']:.1f}")
+		f" col_pitch={col_pitch:.1f}px")
+	# print lattice diagnostic for stride verification
+	slot_map.print_lattice_diagnostic()
 	# localize rows using pure lattice positions
-	raw_data = _stage_localize_rows(gray, template, geom, slot_map)
+	raw_data = _stage_localize_rows(gray, template, measure_cfg, slot_map)
 	# optional NCC template matching refinement
 	if bubble_templates is None:
 		loaded_templates, loaded_masks = (
@@ -753,11 +650,12 @@ def read_answers(image: numpy.ndarray, template: dict,
 		if bubble_masks is None:
 			bubble_masks = loaded_masks
 	if bubble_templates:
-		_stage_template_refine(gray, raw_data, template, geom,
-			bubble_templates, bubble_masks, slot_map)
+		_stage_template_refine(gray, raw_data, template, measure_cfg,
+			bubble_templates, slot_map,
+			bubble_masks=bubble_masks)
 	# measure brightness and decide answers
 	all_edge_means, all_positions, all_edges = _stage_measure_rows(
-		gray, raw_data, template, geom, slot_map)
+		gray, raw_data, template, measure_cfg, slot_map)
 	results = _stage_decide_answers(
 		all_edge_means, all_positions, all_edges, choices, multi_gap)
 	return results

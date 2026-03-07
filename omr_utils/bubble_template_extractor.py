@@ -16,6 +16,7 @@ Offline template construction pipeline:
 
 # Standard Library
 import os
+import time
 
 # PIP3 modules
 import cv2
@@ -72,38 +73,6 @@ def extract_roi_from_bounds(gray: numpy.ndarray, left_x: int,
 
 
 #============================================
-def _score_patch_quality(patch: numpy.ndarray) -> float:
-	"""Score how well a patch represents a clean empty bubble.
-
-	A good empty bubble patch has dark bracket edges (top/bottom rows)
-	and a bright interior with the printed letter. Computes a contrast
-	metric: lower bracket edge brightness relative to interior brightness.
-
-	Args:
-		patch: grayscale template-sized patch
-
-	Returns:
-		quality score (higher = better contrast, cleaner bubble)
-	"""
-	ph, pw = patch.shape
-	# bracket edge region: top and bottom 15% of patch height
-	edge_height = max(1, int(ph * 0.15))
-	# top and bottom edge strips
-	top_strip = patch[:edge_height, :]
-	bot_strip = patch[-edge_height:, :]
-	edge_mean = float(numpy.mean(numpy.concatenate([
-		top_strip.ravel(), bot_strip.ravel()])))
-	# interior region: middle 50% of height
-	interior_y1 = int(ph * 0.25)
-	interior_y2 = int(ph * 0.75)
-	interior = patch[interior_y1:interior_y2, :]
-	interior_mean = float(numpy.mean(interior))
-	# contrast: bright interior minus dark edges
-	contrast = interior_mean - edge_mean
-	return contrast
-
-
-#============================================
 def save_templates(templates: dict, output_dir: str) -> list:
 	"""Save pixel templates as grayscale PNG files.
 
@@ -125,55 +94,28 @@ def save_templates(templates: dict, output_dir: str) -> list:
 
 
 #============================================
-def load_templates(template_dir: str) -> dict:
-	"""Load pixel templates from a directory of PNG files.
-
-	Expects files named A.png, B.png, C.png, D.png, E.png.
-
-	Args:
-		template_dir: directory containing template PNG files
-
-	Returns:
-		dict mapping letter to numpy array, or empty dict if
-		directory does not exist or contains no valid templates
-	"""
-	if not os.path.isdir(template_dir):
-		return {}
-	templates = {}
-	for letter in ["A", "B", "C", "D", "E"]:
-		filepath = os.path.join(template_dir, f"{letter}.png")
-		if os.path.isfile(filepath):
-			img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
-			if img is not None:
-				templates[letter] = img
-	return templates
-
-
-#============================================
 def scale_template_to_bubble(template_img: numpy.ndarray,
-	geom: dict) -> numpy.ndarray:
+	slot_width: int, slot_height: int) -> numpy.ndarray:
 	"""Scale a canonical high-res template down to local bubble size.
 
 	The template lives in a canonical high-resolution coordinate frame.
-	Runtime bubble dimensions are derived from anchor-measured timing
-	spacing (row_pitch and col_pitch in the geom dict). The template
-	is always scaled DOWN to match the predicted local slot size.
+	Runtime slot dimensions come from SlotMap.roi_bounds() lattice
+	geometry. The template is always scaled DOWN to match the actual
+	slot size with small padding for alignment room.
 
 	Args:
 		template_img: canonical high-resolution template array
-		geom: pixel geometry dict with half_width and half_height
-			(from anchor_geom)
+		slot_width: slot width in pixels from roi_bounds (right_x - left_x)
+		slot_height: slot height in pixels from roi_bounds (bot_y - top_y)
 
 	Returns:
 		scaled template array matching the expected bubble dimensions
 	"""
-	# target size includes small padding around the bubble extent
-	half_w = geom["half_width"]
-	half_h = geom["half_height"]
-	pad_x = max(2, half_w * 0.1)
-	pad_y = max(1, half_h * 0.2)
-	target_w = half_w * 2 + pad_x * 2
-	target_h = half_h * 2 + pad_y * 2
+	# add small proportional padding for alignment search room
+	pad_x = max(2, int(slot_width * 0.1))
+	pad_y = max(1, int(slot_height * 0.2))
+	target_w = slot_width + pad_x * 2
+	target_h = slot_height + pad_y * 2
 	# ensure minimum size; int-cast for cv2.resize
 	target_w = int(max(target_w, 5))
 	target_h = int(max(target_h, 3))
@@ -211,6 +153,9 @@ def _find_medoid_roi(rois: list) -> int:
 	# compute pairwise NCC scores
 	avg_scores = numpy.zeros(n, dtype=numpy.float64)
 	for i in range(n):
+		# print progress every 200 candidates
+		if i > 0 and i % 200 == 0:
+			print(f"      medoid: {i}/{n} candidates scored")
 		total = 0.0
 		count = 0
 		for j in range(n):
@@ -343,9 +288,16 @@ def _build_letter_template(rois: list, letter: str,
 	# apply symmetry augmentation to double sample count
 	augmented = _apply_symmetry_augmentation(rois, letter)
 	# find the medoid as alignment reference
+	n_aug = len(augmented)
+	print(f"    finding medoid in {n_aug} augmented ROIs...")
+	t0 = time.time()
 	medoid_idx = _find_medoid_roi(augmented)
+	medoid_elapsed = time.time() - t0
+	print(f"    medoid found (idx {medoid_idx}, {medoid_elapsed:.1f}s)")
 	reference = augmented[medoid_idx]
 	# align all ROIs to reference
+	print(f"    aligning {n_aug} ROIs to reference...")
+	t1 = time.time()
 	aligned_rois = []
 	alignment_table = []
 	for i, roi in enumerate(augmented):
@@ -355,6 +307,8 @@ def _build_letter_template(rois: list, letter: str,
 		alignment_table.append(entry)
 		if score >= reject_threshold:
 			aligned_rois.append(aligned)
+	align_elapsed = time.time() - t1
+	print(f"    alignment done ({align_elapsed:.1f}s)")
 	# need at least 3 aligned ROIs for a good template
 	if len(aligned_rois) < 3:
 		return (None, None, alignment_table)
