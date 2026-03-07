@@ -1,4 +1,4 @@
-output/
+output*/
 scantrons/
 report_*.txt
 .DS_Store
