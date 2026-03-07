@@ -34,18 +34,20 @@ def _compute_sid_bracket_edge_mean(gray: numpy.ndarray,
 	# derive center x from bounds midpoint
 	cx = (left_x + right_x) // 2
 	ce = measure_cfg["center_exclusion"]
-	beh = measure_cfg["bracket_edge_height"]
-	# horizontal bounds: left and right strips excluding center letter
-	lx1 = max(0, left_x)
+	bb_v = measure_cfg["bracket_bar_v"]
+	bb_h = measure_cfg["bracket_bar_h"]
+	# horizontal bounds: bracket inner face to center exclusion
+	bi = measure_cfg["bracket_inner_half"]
+	lx1 = max(0, cx - bi)
 	lx2 = max(0, cx - ce)
 	rx1 = min(w, cx + ce)
-	rx2 = min(w, right_x)
-	# top bracket edge strip
-	top_y1 = max(0, top_y)
-	top_y2 = max(0, top_y + beh)
-	# bottom bracket edge strip
-	bot_y1 = min(h, bot_y - beh)
-	bot_y2 = min(h, bot_y)
+	rx2 = min(w, cx + bi)
+	# top bracket bar strip (positioned at bracket_bar_v from top edge)
+	top_y1 = max(0, top_y + bb_v)
+	top_y2 = max(0, top_y + bb_v + bb_h)
+	# bottom bracket bar strip (mirrored from bottom edge)
+	bot_y1 = min(h, bot_y - bb_v - bb_h)
+	bot_y2 = min(h, bot_y - bb_v)
 	# extract pixel strips
 	tl = gray[int(top_y1):int(top_y2), int(lx1):int(lx2)]
 	tr = gray[int(top_y1):int(top_y2), int(rx1):int(rx2)]
@@ -87,17 +89,17 @@ def _compute_sid_measurement_mean(gray: numpy.ndarray,
 	# derive center x from bounds midpoint
 	cx = (left_x + right_x) // 2
 	ce = measure_cfg["center_exclusion"]
-	mi_v = measure_cfg["measurement_inset_v"]
-	mi_h = measure_cfg["measurement_inset_h"]
-	# left measurement strip: inset from left edge to center exclusion
-	lx1 = max(0, left_x + mi_h)
+	fi_v = measure_cfg["fill_inset_v"]
+	bi = measure_cfg["bracket_inner_half"]
+	# left fill zone: bracket inner face to center exclusion
+	lx1 = max(0, cx - bi)
 	lx2 = max(0, cx - ce)
-	# right measurement strip: center exclusion to inset from right edge
+	# right fill zone: center exclusion to bracket inner face
 	rx1 = min(w, cx + ce)
-	rx2 = min(w, right_x - mi_h)
-	# vertical bounds: inset from top/bottom edges
-	y1 = max(0, top_y + mi_v)
-	y2 = min(h, bot_y - mi_v)
+	rx2 = min(w, cx + bi)
+	# vertical bounds: large inset below/above bracket bars
+	y1 = max(0, top_y + fi_v)
+	y2 = min(h, bot_y - fi_v)
 	# extract pixel strips
 	left_strip = gray[int(y1):int(y2), int(lx1):int(lx2)]
 	right_strip = gray[int(y1):int(y2), int(rx1):int(rx2)]

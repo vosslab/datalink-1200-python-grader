@@ -16,13 +16,15 @@ import omr_utils.timing_mark_anchors
 def draw_answer_debug(image: numpy.ndarray, template: dict,
 	results: list, measure_cfg: dict,
 	slot_map: "omr_utils.slot_map.SlotMap") -> numpy.ndarray:
-	"""Draw color-coded rectangular bubble overlay on a registered image.
+	"""Draw three-zone color-coded bubble overlay on a registered image.
 
 	Uses semi-transparent filled rectangles so every detection zone is
 	visible even when zones share edges. Uses detected edge positions
 	from read_answers results for accurate overlay alignment.
 
-	- Teal filled strips = measurement zones (left and right of center)
+	Three zones per target.png:
+	- Teal filled = green fill measurement windows (small interior rects)
+	- Red filled = bracket bar reference strips (four narrow strips)
 	- Orange outline = center exclusion zone (printed letter area)
 	- Status color outline = outer bubble border (green/red/yellow/gray)
 
@@ -43,12 +45,15 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 	overlay = debug.copy()
 	h, w = debug.shape[:2]
 	choices = template["answers"]["choices"]
-	# use provided geometry for center exclusion and measurement insets
+	# three-zone geometry from measure_cfg
 	ce = measure_cfg["center_exclusion"]
-	mi_v = measure_cfg["measurement_inset_v"]
-	mi_h = measure_cfg["measurement_inset_h"]
+	fi_v = measure_cfg["fill_inset_v"]
+	bi = measure_cfg["bracket_inner_half"]
+	bb_v = measure_cfg["bracket_bar_v"]
+	bb_h = measure_cfg["bracket_bar_h"]
 	# define zone colors (BGR)
 	teal = (200, 128, 0)
+	red = (0, 0, 200)
 	orange = (0, 165, 255)
 	alpha = 0.3
 	for entry in results:
@@ -67,18 +72,41 @@ def draw_answer_debug(image: numpy.ndarray, template: dict,
 				# fallback to lattice-based ROI bounds
 				top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
 					q_num, choice)
-			# -- layer 1: teal filled measurement strips (alpha blended) --
-			# matches _compute_edge_mean: inset from detected edges
-			# left measurement strip
+			# -- layer 1: teal filled fill-zone windows (alpha blended) --
+			# green fill zones: small interior windows between bracket
+			# bars and center letter, vertically between horizontal bars
+			# left fill window
 			cv2.rectangle(overlay,
-				(int(left_x + mi_h), int(top_y + mi_v)),
-				(int(px - ce), int(bot_y - mi_v)),
+				(int(px - bi), int(top_y + fi_v)),
+				(int(px - ce), int(bot_y - fi_v)),
 				teal, -1)
-			# right measurement strip
+			# right fill window
 			cv2.rectangle(overlay,
-				(int(px + ce), int(top_y + mi_v)),
-				(int(right_x - mi_h), int(bot_y - mi_v)),
+				(int(px + ce), int(top_y + fi_v)),
+				(int(px + bi), int(bot_y - fi_v)),
 				teal, -1)
+			# -- layer 2: red bracket bar reference strips (alpha blended) --
+			# four narrow strips on bracket horizontal bars (L-R, U-D mirrored)
+			# top-left bracket bar strip
+			cv2.rectangle(overlay,
+				(int(px - bi), int(top_y + bb_v)),
+				(int(px - ce), int(top_y + bb_v + bb_h)),
+				red, -1)
+			# top-right bracket bar strip
+			cv2.rectangle(overlay,
+				(int(px + ce), int(top_y + bb_v)),
+				(int(px + bi), int(top_y + bb_v + bb_h)),
+				red, -1)
+			# bottom-left bracket bar strip
+			cv2.rectangle(overlay,
+				(int(px - bi), int(bot_y - bb_v - bb_h)),
+				(int(px - ce), int(bot_y - bb_v)),
+				red, -1)
+			# bottom-right bracket bar strip
+			cv2.rectangle(overlay,
+				(int(px + ce), int(bot_y - bb_v - bb_h)),
+				(int(px + bi), int(bot_y - bb_v)),
+				red, -1)
 	# blend the filled overlay onto the debug image
 	cv2.addWeighted(overlay, alpha, debug, 1.0 - alpha, 0, debug)
 	# draw outlines on top of the blended image (no alpha needed)

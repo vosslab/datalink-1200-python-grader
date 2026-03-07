@@ -2,7 +2,38 @@
 
 ## 2026-03-10
 
+### Fixes and Maintenance
+
+- Fixed horizontal detection zone bounds in fill windows, bracket bar strips, and student ID measurement zones. All horizontal bounds are now center-relative using `bracket_inner_half` (half-width from slot center to bracket inner face) instead of ROI-edge-relative using `fill_inset_h`. The ROI edge is the midpoint between adjacent slot centers, not the bracket outer face, so ROI-edge-relative bounds spilled outside the bracket. Affects [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py), [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py), [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py).
+- Replaced `_DZ_FILL_INSET_H` constant with `_DZ_BRACKET_INNER_HALF = 0.3104` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Replaced `fill_inset_h` key with `bracket_inner_half` in `measure_cfg()` return dict.
+- Updated [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py) to derive and print `bracket_inner_half` ratio (= 0.5 - h_margin/width - arm_w/width) instead of `fill_inset_h`.
+- Replaced legacy `/ 3.0` division factors in `_OLD_VALUES` dict in [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py) with evaluated constants. The `/3.0` was a compensation hack from the old stride-based compressed `col_pitch` logic and no longer meaningful under the current geometry.
+
+### Behavior or Interface Changes
+
+- Refactored scoring zones from two-zone model (center exclusion + large measurement strips) to three-zone model per `artifacts/target.png`. New zones: green fill measurement windows (small interior rectangles between bracket bars and center letter), red bracket bar reference strips (four narrow strips on horizontal bars), and orange center exclusion (unchanged). All zones are L-R and U-D symmetric.
+- Renamed detection zone constants in [omr_utils/slot_map.py](../omr_utils/slot_map.py): `_DZ_MEAS_INSET_H` to `_DZ_FILL_INSET_H`, `_DZ_MEAS_INSET_V` to `_DZ_FILL_INSET_V` (value changed from 0.0430 to 0.3864), `_DZ_BRACKET_EDGE_H` to `_DZ_BRACKET_BAR_H` (value changed to 0.0455). Added `_DZ_BRACKET_BAR_V = 0.3295`.
+- Updated `measure_cfg()` return keys: `measurement_inset_h` to `fill_inset_h`, `measurement_inset_v` to `fill_inset_v`, `bracket_edge_height` split into `bracket_bar_v` and `bracket_bar_h`.
+- Updated [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py), [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py), [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py), and [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py) to use new measure_cfg key names.
+- Debug overlay in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) now draws three distinct zone types: teal fill windows, red bracket bar strips, and orange center exclusion outlines.
+
 ### Additions and New Features
+
+- Created [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py). Measures bracket proportions from the base letter template using targeted mid-row and arm-column slices, derives detection zone ratios, and cross-validates against per-letter masks. All measurements are L-R and U-D symmetrized.
+- Added `base_reference` optional parameter to `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). When a 480x88 base reference image is provided, pass 1 aligns to it instead of computing a medoid, anchoring bracket positions to a common reference across all letters.
+- [tools/build_bubble_templates.py](../tools/build_bubble_templates.py) now loads `artifacts/base_letter_template.png` at startup, validates 480x88 dimensions, and passes it as the base reference for template construction.
+
+### Behavior or Interface Changes
+
+- Replaced `/3.0` shimmed detection zone ratios in [omr_utils/slot_map.py](../omr_utils/slot_map.py) with values calibrated from `artifacts/base_letter_template.png`. Horizontal ratios (`center_exclusion` +10%, `measurement_inset_h` +87%, `refine_pad_h` +41%) now match the printed bracket structure. Vertical ratios (`bracket_edge_height`, `measurement_inset_v`, `refine_pad_v`, `refine_max_shift`) verified unchanged.
+- Renamed `_K_*` constants to `_DZ_*` (detection zone) in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Module-private only; `measure_cfg()` returns the same dict keys (no external API change).
+
+### Decisions and Failures
+
+- Detection zone ratios are measured from the template's physical bracket proportions (dimensionless fractions), not from scan-specific pixel coordinates. This preserves OMR geometry contract compliance: all runtime pixel distances still derive from timing-mark pitches via SlotMap.
+- Cross-letter `center_exclusion` CV is 10.5% (just over the 10% QC threshold) because letter widths vary (B, C, D are wider than A, E). The base template average value is used as the canonical reference.
+
+### Developer Tests and Notes
 
 - Added `_upscale_rois_to_canonical()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Upscales all ROIs to canonical resolution (480x88) at the start of template construction, eliminating size variation across scans and giving NCC alignment more pixels to work with.
 - Added `_enforce_symmetry_image()` and `_enforce_symmetry_list()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Post-alignment symmetry regularization that averages each ROI with its own mirror (left-right for A, top-bottom for B-E). Applied after alignment instead of before, preventing misalignment from being codified into mirror copies.

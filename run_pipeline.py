@@ -13,6 +13,7 @@ import cv2
 import omr_utils.template_loader
 import omr_utils.image_registration
 import omr_utils.bubble_reader
+import omr_utils.bubble_template_extractor
 import omr_utils.debug_drawing
 import omr_utils.timing_mark_anchors
 import omr_utils.student_id_reader
@@ -118,6 +119,8 @@ def process_single_image(image_path: str, template: dict,
 	# compute timing mark transform for anchor-derived measure_cfgetry
 	gray = cv2.cvtColor(registered, cv2.COLOR_BGR2GRAY)
 	gray = cv2.GaussianBlur(gray, (3, 3), 0)
+	# normalize full image contrast (1% black / 25% white stretch)
+	gray = omr_utils.bubble_template_extractor.normalize_roi_percentile(gray)
 	raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
 	print(f"  anchor confidence: left={raw_transform.get('left_confidence', 0):.3f}"

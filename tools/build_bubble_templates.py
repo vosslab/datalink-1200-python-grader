@@ -106,6 +106,8 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 	print(f"  processing scan: {scan_id}")
 	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 	gray = cv2.GaussianBlur(gray, (3, 3), 0)
+	# normalize full image contrast (1% black / 25% white stretch)
+	gray = omr_utils.bubble_template_extractor.normalize_roi_percentile(gray)
 	# derive geometry from timing marks so ROI size matches the scan
 	raw_transform = omr_utils.timing_mark_anchors.estimate_anchor_transform(
 		gray, template)
@@ -217,6 +219,43 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 
 
 #============================================
+def _load_base_reference(repo_root: str) -> numpy.ndarray:
+	"""Load the base letter template for pass-1 alignment anchoring.
+
+	The base template provides a common alignment reference so that
+	bracket positions are consistent across all per-letter templates.
+
+	Args:
+		repo_root: repository root directory
+
+	Returns:
+		grayscale numpy array at 480x88
+
+	Raises:
+		FileNotFoundError: if base template file does not exist
+		ValueError: if base template is not 480x88 grayscale
+	"""
+	base_path = os.path.join(repo_root, "artifacts",
+		"base_letter_template.png")
+	if not os.path.isfile(base_path):
+		raise FileNotFoundError(
+			f"base reference not found: {base_path}")
+	base_img = cv2.imread(base_path, cv2.IMREAD_GRAYSCALE)
+	if base_img is None:
+		raise ValueError(f"could not read base reference: {base_path}")
+	# validate dimensions match canonical template size
+	expected_h = omr_utils.bubble_template_extractor.CANONICAL_TEMPLATE_HEIGHT
+	expected_w = omr_utils.bubble_template_extractor.CANONICAL_TEMPLATE_WIDTH
+	if base_img.shape[0] != expected_h or base_img.shape[1] != expected_w:
+		raise ValueError(
+			f"base reference must be {expected_w}x{expected_h}, "
+			f"got {base_img.shape[1]}x{base_img.shape[0]}")
+	print(f"loaded base reference: {base_path}"
+		f" ({expected_w}x{expected_h} grayscale)")
+	return base_img
+
+
+#============================================
 def _build_templates(all_rois: dict, output_dir: str,
 	repo_root: str) -> None:
 	"""Build per-letter templates from collected ROIs.
@@ -226,9 +265,10 @@ def _build_templates(all_rois: dict, output_dir: str,
 		output_dir: base output directory
 		repo_root: repository root for saving final templates
 	"""
+	# load base reference for pass-1 alignment anchoring
+	base_reference = _load_base_reference(repo_root)
 	# target directory for final templates
 	template_out = os.path.join(repo_root, "config", "bubble_templates")
-	qc_dir = os.path.join(output_dir, "qc")
 	all_templates = {}
 	all_masks = {}
 	for letter in sorted(all_rois.keys()):
@@ -241,7 +281,8 @@ def _build_templates(all_rois: dict, output_dir: str,
 		t_start = time.time()
 		template, mask, alignment_table = (
 			omr_utils.bubble_template_extractor._build_letter_template(
-				rois, letter, output_dir=output_dir))
+				rois, letter, output_dir=output_dir,
+				base_reference=base_reference))
 		t_elapsed = time.time() - t_start
 		if template is None:
 			print(f"    SKIP: template construction failed for {letter}")
@@ -253,10 +294,6 @@ def _build_templates(all_rois: dict, output_dir: str,
 			f" ({t_elapsed:.1f}s)")
 		all_templates[letter] = template
 		all_masks[letter] = mask
-		# save QC montage
-		omr_utils.bubble_template_extractor._save_qc_montage(
-			rois, [], alignment_table, letter, template, mask, qc_dir)
-		print(f"    saved QC montage to {qc_dir}/qc_{letter}.png")
 	# save final templates and masks
 	if all_templates:
 		saved = omr_utils.bubble_template_extractor.save_templates_and_masks(

@@ -164,11 +164,12 @@ def _compute_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
 def _compute_dual_zone_means(gray: numpy.ndarray, cx: int, cy: int,
 	top_y: int, bot_y: int, left_x: int, right_x: int,
 	measure_cfg: dict) -> tuple:
-	"""Compute left and right measurement-zone means separately.
+	"""Compute left and right fill-zone means separately.
 
-	This function preserves the dual-zone model explicitly so the
-	decision stage can continue to rely on independent left/right
-	fill measurements after localization.
+	Three-zone model: fill zones are the green interior windows
+	between bracket bars and center letter. Vertical inset is large
+	(starts below bracket horizontal bars), horizontal inset skips
+	past bracket arm width.
 
 	Returns:
 		tuple of (left_mean, right_mean), or (-1.0, -1.0) if invalid
@@ -177,17 +178,17 @@ def _compute_dual_zone_means(gray: numpy.ndarray, cx: int, cy: int,
 	if cx < 0 or cy < 0 or cx >= w or cy >= h:
 		return (-1.0, -1.0)
 	ce = measure_cfg["center_exclusion"]
-	mi_v = measure_cfg["measurement_inset_v"]
-	mi_h = measure_cfg["measurement_inset_h"]
-	# left edge strip: inset from detected left edge to center exclusion
-	lx1 = max(0, left_x + mi_h)
+	fi_v = measure_cfg["fill_inset_v"]
+	bi = measure_cfg["bracket_inner_half"]
+	# left fill window: bracket inner face to center exclusion
+	lx1 = max(0, cx - bi)
 	lx2 = max(0, cx - ce)
-	# right edge strip: from center exclusion to inset from detected right edge
+	# right fill window: center exclusion to bracket inner face
 	rx1 = min(w, cx + ce)
-	rx2 = min(w, right_x - mi_h)
-	# vertical bounds: inset from detected top/bottom edges
-	y1 = max(0, top_y + mi_v)
-	y2 = min(h, bot_y - mi_v)
+	rx2 = min(w, cx + bi)
+	# vertical bounds: large inset below/above bracket bars
+	y1 = max(0, top_y + fi_v)
+	y2 = min(h, bot_y - fi_v)
 	# int-cast at array slicing boundary
 	left_strip = gray[int(y1):int(y2), int(lx1):int(lx2)]
 	right_strip = gray[int(y1):int(y2), int(rx1):int(rx2)]
@@ -508,7 +509,7 @@ def read_answers(image: numpy.ndarray, template: dict,
 	# print K-constant pixel products for measurement zone verification
 	print(f"  K pixel products:"
 		f" center_excl={measure_cfg['center_exclusion']:.1f}px"
-		f" inset_h={measure_cfg['measurement_inset_h']:.1f}px"
+		f" bracket_inner_half={measure_cfg['bracket_inner_half']:.1f}px"
 		f" refine_pad_h={measure_cfg['refine_pad_h']:.1f}px")
 	# print lattice diagnostic for stride verification
 	slot_map.print_lattice_diagnostic()

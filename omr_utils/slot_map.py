@@ -10,23 +10,24 @@ No YAML coordinates, no affine correction, no Sobel refinement.
 import math
 
 
-# Dimensionless fractions relating bubble geometry to timing-mark spacing.
-# Each K constant is the ratio of a bubble measurement to the
-# corresponding pitch (row_pitch for vertical, col_pitch for horizontal).
-# Estimated from curated scans with correct bracket overlay alignment.
-# TEMPORARY COMPATIBILITY SHIM -- not a calibration
-# Horizontal K-constants were tuned against an artificially compressed
-# col_pitch (stride-based fp_spacing/3). Dividing by 3 prevents
-# measurement zones from tripling in width after the labeled-column
-# col_pitch fix. This shim must be replaced by proper recalibration
-# from debug overlays with the corrected lattice.
-_K_CENTER_EXCLUSION = 0.244 / 3.0    # ~0.081 RECALIBRATE
-_K_BRACKET_EDGE_H = 0.043     # bracket edge height / row_pitch
-_K_MEAS_INSET_V = 0.043       # vertical measurement inset / row_pitch
-_K_MEAS_INSET_H = 0.067 / 3.0       # ~0.022 RECALIBRATE
-_K_REFINE_MAX_SHIFT = 0.321   # max template shift / row_pitch
-_K_REFINE_PAD_V = 0.171       # vertical refine padding / row_pitch
-_K_REFINE_PAD_H = 0.177 / 3.0       # ~0.059 RECALIBRATE
+# Detection zone ratios: dimensionless fractions relating bubble
+# measurement geometry to timing-mark spacing. Horizontal ratios
+# scale with col_pitch, vertical ratios with row_pitch.
+# Three-zone model per target.png:
+#   Orange = center exclusion (letter glyph, avoid entirely)
+#   Red    = bracket bar reference strips (narrow bars at top/bottom)
+#   Green  = fill measurement windows (between bars and center letter)
+# Calibrated from artifacts/base_letter_template.png (480x88) using
+# tools/calibrate_bubble_geometry.py. Measurements are L-R and U-D
+# symmetrized. Calibration date: 2026-03-10.
+_DZ_CENTER_EXCLUSION = 0.0896  # center letter glyph half-width / col_pitch
+_DZ_BRACKET_INNER_HALF = 0.3104  # half-width from cx to bracket inner face / col_pitch
+_DZ_FILL_INSET_V = 0.3864     # fill zone top (below bracket bar) / row_pitch
+_DZ_BRACKET_BAR_V = 0.3295    # bracket bar top edge / row_pitch
+_DZ_BRACKET_BAR_H = 0.0455    # bracket bar thickness / row_pitch
+_DZ_REFINE_MAX_SHIFT = 0.3210 # max template shift / row_pitch
+_DZ_REFINE_PAD_V = 0.1710     # vertical refine padding / row_pitch
+_DZ_REFINE_PAD_H = 0.0833     # horizontal refine padding / col_pitch
 
 
 #============================================
@@ -328,25 +329,28 @@ class SlotMap:
 	def measure_cfg(self) -> dict:
 		"""Return measurement constants derived from timing-mark spacing.
 
-		Provides dimensions for measuring within a bubble (Sobel search
-		extents, center exclusion, insets, validation thresholds).
-		Use SlotMap.roi_bounds() and SlotMap.center() for slot placement.
+		Three-zone model per target.png:
+		  fill zones = green interior windows for fill measurement
+		  bracket bars = red reference strips on horizontal bars
+		  center exclusion = orange letter glyph zone
 
 		Returns:
-			dict with keys: center_exclusion, bracket_edge_height,
-			measurement_inset_v, measurement_inset_h, refine_max_shift,
-			refine_pad_v, refine_pad_h, row_pitch, col_pitch
+			dict with keys: center_exclusion, bracket_inner_half,
+			fill_inset_v, bracket_bar_v, bracket_bar_h,
+			refine_max_shift, refine_pad_v, refine_pad_h,
+			row_pitch, col_pitch
 		"""
 		rp = self._row_pitch
 		cp = self._col_pitch
 		cfg = {
-			"center_exclusion": _K_CENTER_EXCLUSION * cp,
-			"bracket_edge_height": _K_BRACKET_EDGE_H * rp,
-			"measurement_inset_v": _K_MEAS_INSET_V * rp,
-			"measurement_inset_h": _K_MEAS_INSET_H * cp,
-			"refine_max_shift": _K_REFINE_MAX_SHIFT * rp,
-			"refine_pad_v": _K_REFINE_PAD_V * rp,
-			"refine_pad_h": _K_REFINE_PAD_H * cp,
+			"center_exclusion": _DZ_CENTER_EXCLUSION * cp,
+			"bracket_inner_half": _DZ_BRACKET_INNER_HALF * cp,
+			"fill_inset_v": _DZ_FILL_INSET_V * rp,
+			"bracket_bar_v": _DZ_BRACKET_BAR_V * rp,
+			"bracket_bar_h": _DZ_BRACKET_BAR_H * rp,
+			"refine_max_shift": _DZ_REFINE_MAX_SHIFT * rp,
+			"refine_pad_v": _DZ_REFINE_PAD_V * rp,
+			"refine_pad_h": _DZ_REFINE_PAD_H * cp,
 			"row_pitch": rp,
 			"col_pitch": cp,
 		}

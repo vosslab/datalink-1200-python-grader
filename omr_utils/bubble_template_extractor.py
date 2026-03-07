@@ -640,26 +640,30 @@ def _build_small_montage(rois: list, max_count: int = 100) -> numpy.ndarray:
 #============================================
 def _build_letter_template(rois: list, letter: str,
 	reject_threshold: float = 0.5,
-	output_dir: str = None) -> tuple:
+	output_dir: str = None,
+	base_reference: numpy.ndarray = None) -> tuple:
 	"""Build a sharp per-letter template via two-pass alignment.
 
 	Pipeline:
-	  upscale_to_canonical -> medoid -> pass1_align -> interim_avg
+	  upscale_to_canonical -> reference -> pass1_align -> interim_avg
 	  -> symmetry_image(interim) -> pass2_align -> mirror_reject
 	  -> symmetry_list -> trim_mean
 
-	Pass 1 aligns to the single-ROI medoid. Pass 2 re-aligns
-	original canonical ROIs to the symmetry-regularized interim
-	average. After pass 2, the worst 10% by mirror NCC are rejected
-	(asymmetric ROIs from misalignment or filled bubbles), then
-	symmetry regularization and trimmed mean produce the final
-	template.
+	When base_reference is provided (480x88 grayscale), pass 1
+	aligns to the base reference instead of computing a medoid.
+	This anchors bracket positions to a common reference across
+	all letters. Pass 2 re-aligns original canonical ROIs to the
+	symmetry-regularized interim average. After pass 2, the worst
+	10% by mirror NCC are rejected, then symmetry regularization
+	and trimmed mean produce the final template.
 
 	Args:
 		rois: list of native-resolution grayscale ROI arrays
 		letter: bubble letter (A-E)
 		reject_threshold: minimum NCC score to keep an aligned ROI
 		output_dir: optional directory for per-pass QC images
+		base_reference: optional 480x88 grayscale image to use as
+			pass-1 alignment target instead of medoid
 
 	Returns:
 		tuple of (template, mask, alignment_table) where:
@@ -677,27 +681,45 @@ def _build_letter_template(rois: list, letter: str,
 	# consistent contrast for NCC alignment and mirror scoring
 	canonical_rois = [normalize_roi_percentile(r) for r in canonical_rois]
 	n_rois = len(canonical_rois)
-	# --- medoid selection on canonical-sized ROIs ---
-	print(f"    finding medoid in {n_rois} canonical ROIs...")
-	t0 = time.time()
-	medoid_idx = _find_medoid_roi(canonical_rois)
-	medoid_elapsed = time.time() - t0
-	print(f"    medoid found (idx {medoid_idx}, {medoid_elapsed:.1f}s)")
-	medoid_roi = canonical_rois[medoid_idx]
-	# save medoid QC image
+	# --- select pass-1 alignment reference ---
+	if base_reference is not None:
+		# validate base reference dimensions match canonical size
+		expected_h = CANONICAL_TEMPLATE_HEIGHT
+		expected_w = CANONICAL_TEMPLATE_WIDTH
+		if (base_reference.shape[0] != expected_h
+			or base_reference.shape[1] != expected_w):
+			raise ValueError(
+				f"base_reference must be {expected_w}x{expected_h}, "
+				f"got {base_reference.shape[1]}x{base_reference.shape[0]}")
+		# use base reference as pass-1 target (skip medoid)
+		pass1_ref = base_reference
+		print(f"    using base reference as pass-1 target"
+			f" ({expected_w}x{expected_h})")
+	else:
+		# --- medoid selection on canonical-sized ROIs ---
+		print(f"    finding medoid in {n_rois} canonical ROIs...")
+		t0 = time.time()
+		medoid_idx = _find_medoid_roi(canonical_rois)
+		medoid_elapsed = time.time() - t0
+		print(f"    medoid found (idx {medoid_idx}, {medoid_elapsed:.1f}s)")
+		pass1_ref = canonical_rois[medoid_idx]
+	# save pass-1 reference QC image
 	if output_dir is not None:
 		qc_subdir = os.path.join(output_dir, "qc")
 		os.makedirs(qc_subdir, exist_ok=True)
-		path = os.path.join(qc_subdir, f"qc_{letter}_medoid.png")
-		cv2.imwrite(path, medoid_roi)
+		# label reflects whether it was medoid or base reference
+		ref_label = "base_ref" if base_reference is not None else "medoid"
+		path = os.path.join(qc_subdir, f"qc_{letter}_{ref_label}.png")
+		cv2.imwrite(path, pass1_ref)
 		_log_image_saved(path)
-	# === PASS 1: align to medoid ===
-	print(f"    pass 1: aligning {n_rois} ROIs to medoid...")
+	# === PASS 1: align to reference ===
+	ref_label = "base reference" if base_reference is not None else "medoid"
+	print(f"    pass 1: aligning {n_rois} ROIs to {ref_label}...")
 	t1 = time.time()
 	pass1_aligned = []
 	alignment_table = []
 	for i, roi in enumerate(canonical_rois):
-		aligned, dx, dy, score = _align_roi_to_reference(roi, medoid_roi)
+		aligned, dx, dy, score = _align_roi_to_reference(roi, pass1_ref)
 		entry = {"index": i, "dx": dx, "dy": dy, "score": score,
 			"kept": True, "pass": 1}
 		alignment_table.append(entry)
