@@ -12,92 +12,6 @@ import omr_utils.slot_map
 import omr_utils.template_matcher
 
 
-
-#============================================
-def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
-	top_y: int, bot_y: int, measure_cfg: dict,
-	default_left: int, default_right: int) -> tuple:
-	"""Refine horizontal bubble position by detecting left and right bracket edges.
-
-	Uses detected top_y/bot_y for a precise vertical ROI instead of
-	relying on coarse estimates. Includes separation validation to
-	reject false edge pairs.
-
-	Args:
-		gray: grayscale image (0=black, 255=white)
-		cx: bubble center x in pixels (template estimate)
-		cy: bubble center y in pixels (already y-refined)
-		top_y: detected top edge y position
-		bot_y: detected bottom edge y position
-		measure_cfg: measurement constants from SlotMap.measure_cfg()
-		default_left: fallback left x from SlotMap lattice bounds
-		default_right: fallback right x from SlotMap lattice bounds
-
-	Returns:
-		tuple of (refined_cx, left_x, right_x) as integers;
-		falls back to defaults if edges are not clearly found
-	"""
-	h, w = gray.shape
-	# derive search half-width from lattice bounds
-	slot_half_w = (default_right - default_left) / 2.0
-	hpad = measure_cfg["refine_pad_h"]
-	# max shift from geometry; no hardcoded cap
-	max_shift = float(measure_cfg["refine_max_shift"])
-	# horizontal ROI: slot width + padding on each side
-	x1 = max(0, int(cx - slot_half_w - hpad))
-	x2 = min(w, int(cx + slot_half_w + hpad))
-	# vertical ROI: use detected top/bot edges for precise bounds
-	ry1 = max(0, int(top_y))
-	ry2 = min(h, int(bot_y))
-	# guard against zero-size ROI
-	if ry2 <= ry1 or x2 <= x1:
-		return (cx, default_left, default_right)
-	roi = gray[ry1:ry2, x1:x2]
-	# apply Sobel-x to detect vertical edges (left/right bracket arms)
-	sobel_x = cv2.Sobel(roi, cv2.CV_64F, 1, 0, ksize=3)
-	# collapse vertically: mean absolute gradient per column
-	col_energy = numpy.mean(numpy.abs(sobel_x), axis=0)
-	# find the two strongest energy peaks (left and right bracket arms)
-	# small suppression to avoid double-counting the same edge
-	min_separation = int(max(4, slot_half_w // 3))
-	min_edge_strength = 15.0
-	# find the strongest peak
-	peak1_idx = int(numpy.argmax(col_energy))
-	peak1_val = float(col_energy[peak1_idx])
-	if peak1_val < min_edge_strength:
-		return (cx, default_left, default_right)
-	# zero out columns near peak1 and find second peak
-	suppressed = col_energy.copy()
-	sup_lo = max(0, peak1_idx - min_separation)
-	sup_hi = min(len(suppressed), peak1_idx + min_separation + 1)
-	suppressed[sup_lo:sup_hi] = 0.0
-	peak2_idx = int(numpy.argmax(suppressed))
-	peak2_val = float(suppressed[peak2_idx])
-	if peak2_val < min_edge_strength:
-		return (cx, default_left, default_right)
-	# left and right bracket arms (order by position)
-	left_idx = min(peak1_idx, peak2_idx)
-	right_idx = max(peak1_idx, peak2_idx)
-	# edge separation validation: reject pairs far outside expected range
-	# x-edges use a tight 30% threshold because internal letter strokes
-	# (e.g. the vertical bars in 'E' and 'C') produce strong Sobel peaks
-	# that create half-width rectangles on lower-quality images
-	expected_separation = slot_half_w * 2
-	actual_separation = right_idx - left_idx
-	if expected_separation > 0:
-		deviation = abs(actual_separation - expected_separation) / expected_separation
-		if deviation >= 0.3:
-			return (cx, default_left, default_right)
-	# convert from ROI coordinates back to image coordinates
-	refined_left = x1 + left_idx
-	refined_right = x1 + right_idx
-	refined_cx = (refined_left + refined_right) // 2
-	# sanity check: reject large center shifts
-	if abs(refined_cx - cx) > max_shift:
-		return (cx, default_left, default_right)
-	return (refined_cx, refined_left, refined_right)
-
-
 #============================================
 def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
 	cx: int, cy: int, measure_cfg: dict,
@@ -291,13 +205,11 @@ def _stage_localize_rows(gray: numpy.ndarray, template: dict,
 #============================================
 def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 	template: dict, measure_cfg: dict,
-	slot_map: "omr_utils.slot_map.SlotMap",
-	skip_sobel: bool = False) -> tuple:
-	"""Refine horizontal edges and compute per-choice measurements.
+	slot_map: "omr_utils.slot_map.SlotMap") -> tuple:
+	"""Compute per-choice measurements using lattice ROI bounds.
 
-	Uses lattice ROI bounds from SlotMap. Local x-edge refinement
-	within the lattice ROI is still performed for precise measurement
-	unless skip_sobel is True.
+	Uses lattice ROI bounds from SlotMap directly for all
+	horizontal positioning.
 
 	Args:
 		gray: grayscale image
@@ -305,8 +217,6 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 		template: loaded template dictionary
 		measure_cfg: measurement constants from SlotMap.measure_cfg()
 		slot_map: SlotMap instance for lattice bounds
-		skip_sobel: if True, skip Sobel x-edge refinement and use
-			lattice bounds directly
 
 	Returns:
 		tuple of (all_edge_means, all_positions, all_edges)
@@ -331,15 +241,10 @@ def _stage_measure_rows(gray: numpy.ndarray, raw_data: list,
 			# get lattice bounds for fallback
 			lat_bounds = slot_map.roi_bounds(q_num, choice)
 			_, _, def_left, def_right = lat_bounds
-			# refine horizontal edges or use lattice bounds directly
-			if skip_sobel:
-				refined_cx = px
-				left_x = def_left
-				right_x = def_right
-			else:
-				refined_cx, left_x, right_x = _refine_bubble_edges_x(
-					gray, px, refined_cy, top_y, bot_y, measure_cfg,
-					default_left=def_left, default_right=def_right)
+			# use lattice bounds directly
+			refined_cx = px
+			left_x = def_left
+			right_x = def_right
 			q_choices[choice]["refined_cx"] = refined_cx
 			# validate the detected rectangle
 			top_y, bot_y, left_x, right_x, refined_cx = (
@@ -409,16 +314,14 @@ def _stage_decide_answers(all_edge_means: list, all_positions: list,
 def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 	template: dict, measure_cfg: dict, bubble_templates: dict,
 	slot_map: "omr_utils.slot_map.SlotMap",
-	bubble_masks: dict = None,
 	ncc_diag_path: str = None) -> list:
 	"""Optional template-matching refinement pass on localized rows.
 
-	Uses NCC to refine bubble x and y positions by matching pixel
-	templates of each letter against the image. When masks are
-	available, uses masked NCC for bracket-focused matching with
-	subpixel refinement. Only updates positions where the NCC
-	confidence is high and the shift is within the geometry limit.
-	Modifies raw_data in place.
+	Uses unmasked NCC (TM_CCOEFF_NORMED) to refine bubble x and y
+	positions by matching pixel templates of each letter against the
+	image. Only updates positions where the NCC confidence is high
+	and the shift is within the geometry limit. Modifies raw_data
+	in place.
 
 	Args:
 		gray: grayscale image
@@ -426,7 +329,6 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 		template: loaded template dictionary
 		measure_cfg: measurement constants from SlotMap.measure_cfg()
 		bubble_templates: dict mapping letter to 5X oversize template array
-		bubble_masks: optional dict mapping letter to mask array
 		slot_map: SlotMap instance for lattice bounds (required)
 		ncc_diag_path: optional path to write diagnostic CSV; when
 			None, summary is still printed but CSV is not written
@@ -467,11 +369,11 @@ def _stage_template_refine(gray: numpy.ndarray, raw_data: list,
 				slot_map.roi_bounds(q_num, choice))
 			slot_dims[choice] = (
 				lat_right - lat_left, lat_bot - lat_top)
-		# run NCC refinement (masked if masks available)
+		# run unmasked NCC refinement
 		refined = omr_utils.template_matcher.refine_row_by_template(
 			gray, bubble_templates, row_positions, choices,
 			search_radius=search_radius,
-			masks=bubble_masks, slot_dims=slot_dims)
+			slot_dims=slot_dims)
 		# update x and y positions when confidence is high and shift is small
 		for choice in choices:
 			total_slots += 1
@@ -618,10 +520,8 @@ def _write_ncc_diag_csv(csv_path: str, diag_rows: list) -> None:
 def read_answers(image: numpy.ndarray, template: dict,
 	slot_map: "omr_utils.slot_map.SlotMap",
 	multi_gap: float = 0.03, bubble_templates: dict = None,
-	bubble_masks: dict = None,
-	refine_mode: str = "ncc+sobel",
-	ncc_diag_path: str = None,
-	ncc_no_mask: bool = False) -> tuple:
+	refine_mode: str = "ncc",
+	ncc_diag_path: str = None) -> tuple:
 	"""Read all 100 answers from a registered scantron image.
 
 	Uses self-referencing scoring: for each question, the lightest
@@ -640,15 +540,11 @@ def read_answers(image: numpy.ndarray, template: dict,
 		multi_gap: min spread gap between top two scores for MULTIPLE flag
 		bubble_templates: optional dict of pixel templates for NCC refinement;
 			if None, attempts to load from config/bubble_templates/
-		bubble_masks: optional dict of mask arrays for masked NCC;
-			if None, attempts to load alongside templates
-		refine_mode: refinement mode for A/B experiment:
-			"ncc+sobel" = NCC then Sobel (current default),
-			"ncc" = NCC only (no Sobel override),
+		refine_mode: refinement mode:
+			"ncc" = NCC template refinement (default),
 			"lattice" = pure geometry baseline (no refinement)
 		ncc_diag_path: optional path to write NCC diagnostic CSV;
 			when None, diagnostics are still printed but not saved
-		ncc_no_mask: when True, force unmasked NCC matching
 
 	Returns:
 		tuple of (results, ncc_diag) where results is a list of
@@ -676,34 +572,23 @@ def read_answers(image: numpy.ndarray, template: dict,
 	# print ROI diagnostics for representative slots
 	slot_map.print_roi_diagnostic()
 	# print active refinement mode
-	mask_status = "no-mask" if ncc_no_mask else "masked"
-	print(f"  refine_mode: {refine_mode} ({mask_status})")
+	print(f"  refine_mode: {refine_mode}")
 	# localize rows using pure lattice positions
 	raw_data = _stage_localize_rows(gray, template, measure_cfg, slot_map)
 	# optional NCC template matching refinement
 	ncc_diag = []
-	if refine_mode in ("ncc+sobel", "ncc"):
+	if refine_mode == "ncc":
 		if bubble_templates is None:
-			loaded_templates, loaded_masks = (
+			bubble_templates = (
 				omr_utils.template_matcher.try_load_bubble_templates())
-			bubble_templates = loaded_templates
-			# use loaded masks if caller did not provide any
-			if bubble_masks is None:
-				bubble_masks = loaded_masks
-		# force unmasked NCC when --ncc-no-mask flag is set
-		effective_masks = None if ncc_no_mask else bubble_masks
 		if bubble_templates:
 			ncc_diag = _stage_template_refine(
 				gray, raw_data, template, measure_cfg,
 				bubble_templates, slot_map,
-				bubble_masks=effective_masks,
 				ncc_diag_path=ncc_diag_path)
-	# determine whether to skip Sobel x-edge refinement
-	use_skip_sobel = (refine_mode in ("ncc", "lattice"))
 	# measure brightness and decide answers
 	all_edge_means, all_positions, all_edges = _stage_measure_rows(
-		gray, raw_data, template, measure_cfg, slot_map,
-		skip_sobel=use_skip_sobel)
+		gray, raw_data, template, measure_cfg, slot_map)
 	results = _stage_decide_answers(
 		all_edge_means, all_positions, all_edges, choices, multi_gap)
 	# propagate NCC refinement confidence to results for debug overlay

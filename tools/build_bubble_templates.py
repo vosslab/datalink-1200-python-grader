@@ -5,7 +5,7 @@ Two-pass pipeline:
   Pass 1 - ROI extraction: load each scan, run anchor transform and
     SlotMap to extract all bubble ROIs grouped by letter (A-E).
   Pass 2 - Template construction: align ROIs, reject outliers, build
-    averaged templates with bracket-emphasis masks.
+    averaged templates.
 
 Usage:
   source source_me.sh && python tools/build_bubble_templates.py \
@@ -270,7 +270,6 @@ def _build_templates(all_rois: dict, output_dir: str,
 	# target directory for final templates
 	template_out = os.path.join(repo_root, "config", "bubble_templates")
 	all_templates = {}
-	all_masks = {}
 	for letter in sorted(all_rois.keys()):
 		rois = all_rois[letter]
 		print(f"  letter {letter}: {len(rois)} ROIs collected")
@@ -279,7 +278,7 @@ def _build_templates(all_rois: dict, output_dir: str,
 			continue
 		# build template with two-pass alignment and symmetry
 		t_start = time.time()
-		template, mask, alignment_table = (
+		template, alignment_table = (
 			omr_utils.bubble_template_extractor._build_letter_template(
 				rois, letter, output_dir=output_dir,
 				base_reference=base_reference))
@@ -293,12 +292,11 @@ def _build_templates(all_rois: dict, output_dir: str,
 		print(f"    aligned: {kept} kept, {rejected} rejected"
 			f" ({t_elapsed:.1f}s)")
 		all_templates[letter] = template
-		all_masks[letter] = mask
-	# save final templates and masks
+	# save final templates
 	if all_templates:
-		saved = omr_utils.bubble_template_extractor.save_templates_and_masks(
-			all_templates, all_masks, template_out)
-		print(f"\nsaved {len(saved)} template/mask files to {template_out}/")
+		saved = omr_utils.bubble_template_extractor.save_templates(
+			all_templates, template_out)
+		print(f"\nsaved {len(saved)} template files to {template_out}/")
 	else:
 		print("\nWARNING: no templates were built")
 

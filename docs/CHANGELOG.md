@@ -2,6 +2,23 @@
 
 ## 2026-03-12
 
+### Removals and Deprecations
+
+- Deleted `_subpixel_peak()` and `match_bubble_masked()` from [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Masked NCC (`TM_CCORR_NORMED`) was experimentally shown to produce tiny score deltas with large random shifts -- pure noise chasing.
+- Deleted `_refine_bubble_edges_x()` Sobel edge detector from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Sobel x-edge refinement was experimentally shown to be harmful.
+- Deleted `_generate_template_mask()` from [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). No longer needed without masked NCC.
+- Deleted `_cross_validate_masks()` from [tools/calibrate_bubble_geometry.py](../tools/calibrate_bubble_geometry.py). No mask files to cross-validate against.
+- Deleted mask PNG files `config/bubble_templates/{A-E}_mask.png`. Masks are no longer generated or consumed.
+- Removed `masks` parameter from `refine_row_by_template()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Always uses unmasked NCC now.
+- Removed `bubble_masks`, `ncc_no_mask`, and `skip_sobel` parameters from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Simplified `read_answers()` and `_stage_measure_rows()`.
+- Removed `--ncc-no-mask` CLI flag from [run_pipeline.py](../run_pipeline.py). Removed `'ncc+sobel'` from `--refine-mode` choices; default changed from `'ncc+sobel'` to `'ncc'`.
+- Renamed `load_templates_and_masks()` to `load_templates()` and `save_templates_and_masks()` to `save_templates()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Template-only loading, no mask handling.
+- Renamed `try_load_bubble_templates()` return type from `tuple` to `dict` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Returns templates only.
+
+### Decisions and Failures
+
+- Unmasked NCC (`TM_CCOEFF_NORMED`) is now the only NCC path. A/B experiment proved masked NCC is harmful at runtime resolution (~60x11px). Full writeup in [docs/NCC_MASK_AB_EXPERIMENT_2.md](NCC_MASK_AB_EXPERIMENT_2.md).
+
 ### Additions and New Features
 
 - Added `score_at_seed` return value to `match_bubble_local()` and `match_bubble_masked()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). Extracts NCC score at the zero-shift (lattice) position from `result[search_radius, search_radius]` for score delta analysis. Return tuples expanded from 3/5 to 6 values: `(rcx, rcy, conf, dx, dy, score_at_seed)`.

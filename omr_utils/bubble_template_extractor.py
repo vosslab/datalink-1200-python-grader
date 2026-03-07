@@ -12,7 +12,6 @@ Offline template construction pipeline:
 4. _align_roi_to_reference() - translation-only NCC alignment (two passes)
 5. _enforce_symmetry_image() / _enforce_symmetry_list() - post-alignment symmetry
 6. _build_letter_template() - two-pass aligned average with outlier rejection
-7. _generate_template_mask() - derive bracket-emphasis mask
 """
 
 # Standard Library
@@ -643,14 +642,13 @@ def _build_letter_template(rois: list, letter: str,
 			pass-1 alignment target instead of medoid
 
 	Returns:
-		tuple of (template, mask, alignment_table) where:
+		tuple of (template, alignment_table) where:
 		- template: uint8 grayscale array at canonical resolution
-		- mask: uint8 array emphasizing bracket structure
 		- alignment_table: list of dicts with dx, dy, score, kept, pass
-		Returns (None, None, []) if fewer than 3 ROIs survive
+		Returns (None, []) if fewer than 3 ROIs survive
 	"""
 	if len(rois) < 3:
-		return (None, None, [])
+		return (None, [])
 	# --- upscale all ROIs to canonical resolution up front ---
 	canonical_rois = _upscale_rois_to_canonical(rois)
 	# --- re-normalize after upscale (1% black / 25% white stretch) ---
@@ -708,7 +706,7 @@ def _build_letter_template(rois: list, letter: str,
 	print(f"    pass 1 done ({p1_elapsed:.1f}s,"
 		f" median NCC={p1_median_score:.4f})")
 	if len(pass1_aligned) < 3:
-		return (None, None, alignment_table)
+		return (None, alignment_table)
 	# --- reject worst 20% by mirror symmetry for pass-1 average ---
 	# these are excluded from the interim average only; all canonical
 	# ROIs still get a second chance in pass 2 against the sharper ref
@@ -721,7 +719,7 @@ def _build_letter_template(rois: list, letter: str,
 		f" max={float(p1_mirror_arr.max()):.4f}"
 		f" rejected={n_p1_mirror_rejected}")
 	if len(p1_kept) < 3:
-		return (None, None, alignment_table)
+		return (None, alignment_table)
 	# build pass-1 interim average from kept ROIs only
 	p1_stack = numpy.stack(
 		[a.astype(numpy.float32) for a in p1_kept], axis=0)
@@ -770,7 +768,7 @@ def _build_letter_template(rois: list, letter: str,
 	# append pass-2 entries to alignment table
 	alignment_table.extend(pass2_table)
 	if len(pass2_aligned) < 3:
-		return (None, None, alignment_table)
+		return (None, alignment_table)
 	# --- reject least symmetric ROIs by mirror NCC ---
 	pass2_kept, kept_indices, mirror_scores = _reject_asymmetric_rois(
 		pass2_aligned, letter, reject_fraction=0.1)
@@ -786,7 +784,7 @@ def _build_letter_template(rois: list, letter: str,
 		f" max={float(mirror_arr.max()):.4f}"
 		f" rejected={n_mirror_rejected}")
 	if len(pass2_kept) < 3:
-		return (None, None, alignment_table)
+		return (None, alignment_table)
 	# apply symmetry regularization to surviving pass-2 ROIs
 	pass2_sym = _enforce_symmetry_list(pass2_kept, letter)
 	# build pass-2 average before symmetry (for QC comparison)
@@ -800,8 +798,6 @@ def _build_letter_template(rois: list, letter: str,
 	template_float = scipy.stats.trim_mean(
 		p2_stack, proportiontocut=0.1, axis=0)
 	template = numpy.clip(template_float, 0, 255).astype(numpy.uint8)
-	# generate mask from the final template
-	mask = _generate_template_mask(template)
 	# save pass-2 QC images
 	if output_dir is not None:
 		qc_subdir = os.path.join(output_dir, "qc")
@@ -822,118 +818,46 @@ def _build_letter_template(rois: list, letter: str,
 			f"qc_{letter}_pass2_montage.png")
 		cv2.imwrite(path, p2_montage)
 		_log_image_saved(path)
-		# final mask
-		path = os.path.join(qc_subdir, f"qc_{letter}_final_mask.png")
-		cv2.imwrite(path, mask)
-		_log_image_saved(path)
 	# print score comparison
 	print(f"    NCC improvement: pass1={p1_median_score:.4f}"
 		f" -> pass2={p2_median_score:.4f}")
-	return (template, mask, alignment_table)
+	return (template, alignment_table)
 
 
 #============================================
-def _generate_template_mask(template: numpy.ndarray) -> numpy.ndarray:
-	"""Derive a mask emphasizing bracket structure over background.
+def load_templates(template_dir: str) -> dict:
+	"""Load pixel templates from a directory.
 
-	Dark regions (bracket edges, printed letter) get high mask weight.
-	Bright background regions get low weight. This lets the masked NCC
-	matcher focus on structural features rather than uniform paper.
+	Expects files named A.png, B.png, ..., E.png.
 
 	Args:
-		template: uint8 grayscale template
+		template_dir: directory containing template PNG files
 
 	Returns:
-		uint8 mask array (same shape as template), values 0-255
-	"""
-	# invert: dark bracket features become bright mask values
-	inverted = 255 - template
-	# apply mild Gaussian blur to smooth mask edges
-	blurred = cv2.GaussianBlur(inverted, (3, 3), 0)
-	# threshold to suppress low-contrast background
-	# use Otsu to find automatic threshold
-	_, mask = cv2.threshold(blurred, 0, 255,
-		cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-	# dilate slightly to include edge neighborhoods
-	kernel = numpy.ones((3, 3), numpy.uint8)
-	mask = cv2.dilate(mask, kernel, iterations=1)
-	return mask
-
-
-#============================================
-def load_templates_and_masks(template_dir: str) -> tuple:
-	"""Load pixel templates and their masks from a directory.
-
-	Expects files named A.png, B.png, ..., E.png for templates
-	and A_mask.png, B_mask.png, ..., E_mask.png for masks.
-
-	Args:
-		template_dir: directory containing template and mask PNG files
-
-	Returns:
-		tuple of (templates_dict, masks_dict) where each maps
-		letter to numpy array. Empty dicts if directory missing.
+		dict mapping letter to numpy array. Empty dict if
+		directory missing.
 	"""
 	if not os.path.isdir(template_dir):
-		return ({}, {})
+		return {}
 	templates = {}
-	masks = {}
 	for letter in ["A", "B", "C", "D", "E"]:
-		# load template
 		template_path = os.path.join(template_dir, f"{letter}.png")
 		if os.path.isfile(template_path):
 			img = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
 			if img is not None:
 				templates[letter] = img
-		# load mask
-		mask_path = os.path.join(template_dir, f"{letter}_mask.png")
-		if os.path.isfile(mask_path):
-			mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-			if mask is not None:
-				masks[letter] = mask
-	return (templates, masks)
-
-
-#============================================
-def save_templates_and_masks(templates: dict, masks: dict,
-	output_dir: str) -> list:
-	"""Save templates and masks as PNG files.
-
-	Args:
-		templates: dict mapping letter to template numpy array
-		masks: dict mapping letter to mask numpy array
-		output_dir: directory to save files
-
-	Returns:
-		list of saved file paths
-	"""
-	os.makedirs(output_dir, exist_ok=True)
-	saved_paths = []
-	for letter, template_img in sorted(templates.items()):
-		# save template
-		filepath = os.path.join(output_dir, f"{letter}.png")
-		cv2.imwrite(filepath, template_img)
-		_log_image_saved(filepath)
-		saved_paths.append(filepath)
-	for letter, mask_img in sorted(masks.items()):
-		# save mask
-		filepath = os.path.join(output_dir, f"{letter}_mask.png")
-		cv2.imwrite(filepath, mask_img)
-		_log_image_saved(filepath)
-		saved_paths.append(filepath)
-	return saved_paths
+	return templates
 
 
 #============================================
 def _save_qc_montage(rois: list, aligned_rois: list,
 	alignment_table: list, letter: str, template: numpy.ndarray,
-	mask: numpy.ndarray, output_dir: str) -> str:
+	output_dir: str) -> str:
 	"""Save a QC montage showing alignment results for one letter.
 
 	Creates a multi-panel image:
 	- Top row: original ROIs (green border = kept, red = rejected)
-	- Middle row: aligned ROIs (kept only)
-	- Bottom row: final template and mask
+	- Bottom row: final template
 
 	Args:
 		rois: original ROI list
@@ -941,7 +865,6 @@ def _save_qc_montage(rois: list, aligned_rois: list,
 		alignment_table: list of alignment dicts with score and kept
 		letter: bubble letter
 		template: final averaged template
-		mask: final mask
 		output_dir: directory to save QC images
 
 	Returns:
@@ -977,10 +900,9 @@ def _save_qc_montage(rois: list, aligned_rois: list,
 		cv2.rectangle(roi_bgr, (0, 0),
 			(cell_w - 1, cell_h - 1), border_color, 2)
 		panel1[y1:y1 + cell_h, x1:x1 + cell_w] = roi_bgr
-	# panel 2: template and mask side by side
+	# panel 2: template
 	tmpl_bgr = cv2.cvtColor(template, cv2.COLOR_GRAY2BGR)
-	mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-	panel2 = numpy.concatenate([tmpl_bgr, mask_bgr], axis=1)
+	panel2 = tmpl_bgr
 	# combine panels vertically
 	# resize panel2 to match panel1 width
 	if panel2.shape[1] != panel_w:

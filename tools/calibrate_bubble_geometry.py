@@ -2,8 +2,7 @@
 """Measure detection zone ratios from the base bubble template.
 
 Loads the base letter template (artifacts/base_letter_template.png)
-at canonical 480x88 to measure bracket proportions. Cross-validates
-with per-letter masks from config/bubble_templates/{A-E}_mask.png.
+at canonical 480x88 to measure bracket proportions.
 
 The template spans exactly one col_pitch x one row_pitch, so pixel
 measurements convert directly to pitch fractions:
@@ -336,62 +335,6 @@ def _print_constants_block(ratios: dict) -> None:
 
 
 #============================================
-def _cross_validate_masks(mask_dir: str,
-	base_ratios: dict) -> None:
-	"""Cross-validate base template ratios against per-letter masks.
-
-	Measures each mask independently and prints per-letter std dev
-	to verify cross-letter consistency.
-
-	Args:
-		mask_dir: directory containing {A-E}_mask.png
-		base_ratios: ratios derived from base template
-	"""
-	letters = ["A", "B", "C", "D", "E"]
-	per_letter = {}
-	for letter in letters:
-		mask_path = os.path.join(mask_dir, f"{letter}_mask.png")
-		if not os.path.isfile(mask_path):
-			print(f"  WARNING: mask not found: {mask_path}")
-			continue
-		mask_img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-		if mask_img is None:
-			print(f"  WARNING: could not read: {mask_path}")
-			continue
-		m = _measure_image(mask_img, f"mask {letter}")
-		per_letter[letter] = _compute_ratios(m)
-	if not per_letter:
-		print("\nno masks available for cross-validation")
-		return
-	# compute cross-letter statistics for calibrated ratios
-	h_ratio_names = ["center_exclusion", "bracket_inner_half",
-		"refine_pad_h"]
-	print(f"\n{'='*72}")
-	print("Cross-letter consistency (horizontal ratios from masks):")
-	print(f"{'='*72}")
-	print(f"  {'name':<22} {'base':>8} {'mean':>8}"
-		f" {'std':>8} {'cv':>8}  {'QC':>4}")
-	print(f"  {'-'*22} {'-'*8} {'-'*8}"
-		f" {'-'*8} {'-'*8}  {'-'*4}")
-	for name in h_ratio_names:
-		vals = []
-		for letter in letters:
-			if letter in per_letter:
-				vals.append(per_letter[letter][name])
-		if not vals:
-			continue
-		arr = numpy.array(vals)
-		mean_val = float(arr.mean())
-		std_val = float(arr.std())
-		# coefficient of variation
-		cv = std_val / mean_val if mean_val != 0 else 0
-		qc = "OK" if cv < 0.10 else "WARN"
-		base_val = base_ratios[name]
-		print(f"  {name:<22} {base_val:8.4f} {mean_val:8.4f}"
-			f" {std_val:8.4f} {cv:8.3f}  {qc:>4}")
-
-
-#============================================
 def main() -> None:
 	"""Run the calibration measurement pipeline."""
 	repo_root = subprocess.check_output(
@@ -411,9 +354,6 @@ def main() -> None:
 	base_m = _measure_image(base_img, "base_letter_template")
 	base_ratios = _compute_ratios(base_m)
 	_print_ratio_table(base_ratios, "base_letter_template")
-	# cross-validate with per-letter masks
-	mask_dir = os.path.join(repo_root, "config", "bubble_templates")
-	_cross_validate_masks(mask_dir, base_ratios)
 	# print final constants
 	_print_constants_block(base_ratios)
 	print("\ndone.")
