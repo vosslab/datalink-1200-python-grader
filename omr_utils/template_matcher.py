@@ -57,8 +57,9 @@ def match_bubble_local(gray: numpy.ndarray, template_img: numpy.ndarray,
 	roi_h = roi_y2 - roi_y1
 	if roi_w <= tw or roi_h <= th:
 		return (approx_cx, approx_cy, 0.0)
-	# extract search region
+	# extract search region and normalize contrast to match template
 	roi = gray[roi_y1:roi_y2, roi_x1:roi_x2]
+	roi = omr_utils.bubble_template_extractor.normalize_roi_percentile(roi)
 	# run normalized cross-correlation
 	result = cv2.matchTemplate(roi, template_img, cv2.TM_CCOEFF_NORMED)
 	# find peak location
@@ -156,8 +157,9 @@ def match_bubble_masked(gray: numpy.ndarray, template_img: numpy.ndarray,
 	roi_h = roi_y2 - roi_y1
 	if roi_w <= tw or roi_h <= th:
 		return (approx_cx, approx_cy, 0.0, 0, 0)
-	# extract search region
+	# extract search region and normalize contrast to match template
 	roi = gray[roi_y1:roi_y2, roi_x1:roi_x2]
+	roi = omr_utils.bubble_template_extractor.normalize_roi_percentile(roi)
 	# ensure mask matches template dimensions
 	if mask_img.shape != template_img.shape:
 		mask_img = cv2.resize(mask_img, (tw, th),

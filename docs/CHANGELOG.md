@@ -6,16 +6,21 @@
 
 - Added `_upscale_rois_to_canonical()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Upscales all ROIs to canonical resolution (480x88) at the start of template construction, eliminating size variation across scans and giving NCC alignment more pixels to work with.
 - Added `_enforce_symmetry_image()` and `_enforce_symmetry_list()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Post-alignment symmetry regularization that averages each ROI with its own mirror (left-right for A, top-bottom for B-E). Applied after alignment instead of before, preventing misalignment from being codified into mirror copies.
-- Added `_mirror_ncc_score()` and `_reject_asymmetric_rois()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Computes NCC between each ROI and its own mirror to score symmetry. Applied after both passes: pass 1 rejects worst 20% from the interim average (ROIs still get a second chance in pass 2), pass 2 rejects worst 10% before the final trimmed mean.
+- Added `_mirror_ncc_score()` and `_reject_asymmetric_rois()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Computes NCC between each ROI and its own mirror to score symmetry. Applied after both passes: pass 1 rejects worst 50% from the interim average (ROIs still get a second chance in pass 2), pass 2 rejects worst 10% before the final trimmed mean.
 - Added `_build_small_montage()` helper to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Builds a grid montage from same-sized ROIs for QC output.
 - Added per-pass QC diagnostics to `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Saves medoid, pass-1 avg, pass-1 symmetrized avg, pass-2 avg, pass-2 symmetrized avg, final mask, and montages for both passes.
 
 ### Behavior or Interface Changes
 
+- Added percentile normalization (1%/75%) to test ROIs in `match_bubble_local()` and `match_bubble_masked()` in [omr_utils/template_matcher.py](../omr_utils/template_matcher.py). The search ROI extracted from the scoring sheet is now contrast-stretched to match the template's normalization, eliminating contrast mismatch between template and test image.
 - Restructured `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) to two-pass alignment pipeline. Pass 1 aligns to medoid, builds interim average, applies symmetry regularization. Pass 2 re-aligns original canonical ROIs to the symmetrized interim average, then applies per-ROI symmetry before trimmed mean. Produces sharper bracket corners and letter stroke edges.
 - Removed pre-alignment symmetry augmentation call from `_build_letter_template()`. The `_apply_symmetry_augmentation()` function is retained in the module but no longer called in the template pipeline. Symmetry is now enforced post-alignment via `_enforce_symmetry_image()` and `_enforce_symmetry_list()`.
 - ROIs are now upscaled to canonical resolution (480x88) before medoid selection and alignment, rather than after. This eliminates hidden resizing inside `_find_medoid_roi()` from mixed ROI sizes across scans.
 - `_build_letter_template()` now accepts an optional `output_dir` parameter for QC image output.
+
+### Fixes and Maintenance
+
+- Fixed `_align_roi_to_reference()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). After upscaling all ROIs to canonical 480x88, the reference was the same size as the ROI, so `cv2.matchTemplate` returned a 1x1 result and alignment was a no-op (dx=0, dy=0 always). Now pads the ROI with a replicate border (`search_margin=15`) before matching, giving the reference room to slide and detect real translation offsets.
 
 ### Additions and New Features (cont.)
 

@@ -381,49 +381,46 @@ def _find_medoid_roi(rois: list) -> int:
 
 #============================================
 def _align_roi_to_reference(roi: numpy.ndarray,
-	reference: numpy.ndarray) -> tuple:
+	reference: numpy.ndarray,
+	search_margin: int = 15) -> tuple:
 	"""Align an ROI to a reference via translation-only NCC.
 
-	Uses cv2.matchTemplate to find the best translation offset. The
-	reference must be smaller than the ROI (or they must match in size).
+	Pads the ROI with white (255) border to create a search window,
+	then slides the reference across it via cv2.matchTemplate.
+	The search_margin controls how many pixels of shift can be
+	detected in each direction.
 
 	Args:
 		roi: grayscale ROI to align
-		reference: grayscale reference template (must be <= roi in size)
+		reference: grayscale reference template
+		search_margin: pixels of padding on each side for the
+			search window (default 15)
 
 	Returns:
 		tuple of (aligned_roi, dx, dy, score) where aligned_roi is
 		cropped to match reference dimensions, dx/dy are the shift,
-		and score is the NCC peak value. Returns (roi_center_crop,
+		and score is the NCC peak value. Returns (center_crop,
 		0, 0, 0.0) if matching fails.
 	"""
 	rh, rw = roi.shape
 	th, tw = reference.shape
-	# if reference is larger, crop it to fit
-	if th > rh or tw > rw:
-		# crop reference center to match roi
-		crop_h = min(th, rh)
-		crop_w = min(tw, rw)
-		cy = th // 2
-		cx = tw // 2
-		ref_crop = reference[cy - crop_h // 2:cy + crop_h // 2,
-			cx - crop_w // 2:cx + crop_w // 2]
-		aligned = cv2.resize(roi, (ref_crop.shape[1], ref_crop.shape[0]),
-			interpolation=cv2.INTER_AREA)
-		return (aligned, 0, 0, 0.0)
-	# run NCC template matching
-	result = cv2.matchTemplate(roi, reference, cv2.TM_CCOEFF_NORMED)
+	# pad ROI with white (255) so the reference can slide;
+	# white matches the paper background and won't bias NCC
+	padded = cv2.copyMakeBorder(roi,
+		search_margin, search_margin,
+		search_margin, search_margin,
+		cv2.BORDER_CONSTANT, value=255)
+	# run NCC template matching on the padded image
+	result = cv2.matchTemplate(padded, reference, cv2.TM_CCOEFF_NORMED)
 	_, max_val, _, max_loc = cv2.minMaxLoc(result)
 	score = float(max_val)
-	# max_loc is top-left of best match position
+	# max_loc is top-left of best match in padded coordinates
 	best_x, best_y = max_loc
-	# center offset relative to "centered" position
-	center_x = (rw - tw) // 2
-	center_y = (rh - th) // 2
-	dx = best_x - center_x
-	dy = best_y - center_y
-	# crop aligned region from roi at the matched position
-	aligned = roi[best_y:best_y + th, best_x:best_x + tw].copy()
+	# the "centered" position in padded coords is (search_margin, search_margin)
+	dx = best_x - search_margin
+	dy = best_y - search_margin
+	# crop aligned region from padded image at the matched position
+	aligned = padded[best_y:best_y + th, best_x:best_x + tw].copy()
 	return (aligned, dx, dy, score)
 
 
@@ -608,8 +605,8 @@ def _reject_asymmetric_rois(rois: list, letter: str,
 
 
 #============================================
-def _build_small_montage(rois: list, max_count: int = 20) -> numpy.ndarray:
-	"""Build a small montage grid from a list of same-sized ROIs.
+def _build_small_montage(rois: list, max_count: int = 100) -> numpy.ndarray:
+	"""Build a montage grid from a list of same-sized ROIs.
 
 	Args:
 		rois: list of grayscale numpy arrays (should all be same size)
@@ -675,6 +672,10 @@ def _build_letter_template(rois: list, letter: str,
 		return (None, None, [])
 	# --- upscale all ROIs to canonical resolution up front ---
 	canonical_rois = _upscale_rois_to_canonical(rois)
+	# --- re-normalize after upscale (1% black / 25% white stretch) ---
+	# cubic interpolation can shift intensities; re-normalizing ensures
+	# consistent contrast for NCC alignment and mirror scoring
+	canonical_rois = [normalize_roi_percentile(r) for r in canonical_rois]
 	n_rois = len(canonical_rois)
 	# --- medoid selection on canonical-sized ROIs ---
 	print(f"    finding medoid in {n_rois} canonical ROIs...")
@@ -740,8 +741,11 @@ def _build_letter_template(rois: list, letter: str,
 		path = os.path.join(qc_subdir, f"qc_{letter}_pass1_sym_avg.png")
 		cv2.imwrite(path, p1_sym_avg)
 		_log_image_saved(path)
-		# pass-1 montage (first 20 aligned ROIs)
-		p1_montage = _build_small_montage(pass1_aligned, max_count=20)
+		# pass-1 montage of aligned ROIs, sorted best-to-worst by mirror NCC
+		p1_sorted_indices = sorted(range(len(pass1_aligned)),
+			key=lambda k: p1_mirror_scores[k], reverse=True)
+		p1_sorted_rois = [pass1_aligned[i] for i in p1_sorted_indices]
+		p1_montage = _build_small_montage(p1_sorted_rois, max_count=100)
 		path = os.path.join(qc_subdir,
 			f"qc_{letter}_pass1_montage.png")
 		cv2.imwrite(path, p1_montage)
@@ -810,8 +814,11 @@ def _build_letter_template(rois: list, letter: str,
 		path = os.path.join(qc_subdir, f"qc_{letter}_pass2_sym_avg.png")
 		cv2.imwrite(path, template)
 		_log_image_saved(path)
-		# pass-2 montage (first 20 aligned ROIs)
-		p2_montage = _build_small_montage(pass2_aligned, max_count=20)
+		# pass-2 montage of aligned ROIs, sorted best-to-worst by mirror NCC
+		p2_sorted_indices = sorted(range(len(pass2_aligned)),
+			key=lambda k: mirror_scores[k], reverse=True)
+		p2_sorted_rois = [pass2_aligned[i] for i in p2_sorted_indices]
+		p2_montage = _build_small_montage(p2_sorted_rois, max_count=100)
 		path = os.path.join(qc_subdir,
 			f"qc_{letter}_pass2_montage.png")
 		cv2.imwrite(path, p2_montage)
@@ -945,8 +952,8 @@ def _save_qc_montage(rois: list, aligned_rois: list,
 	# determine cell size from template
 	cell_h = template.shape[0]
 	cell_w = template.shape[1]
-	# limit to first 20 ROIs for montage readability
-	show_count = min(len(rois), 20)
+	# show up to 100 ROIs in the montage
+	show_count = min(len(rois), 100)
 	cols = min(show_count, 10)
 	rows = (show_count + cols - 1) // cols
 	# panel 1: original ROIs in a grid
