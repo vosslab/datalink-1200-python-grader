@@ -304,6 +304,27 @@ class SlotMap:
 				f"{w}x{h}  aspect={aspect:.2f}")
 
 	#============================================
+	def print_seam_diagnostic(self) -> None:
+		"""Print seam errors between adjacent choice ROIs.
+
+		For a representative row (Q10), prints the gap or overlap
+		between right edge of one choice and left edge of the next.
+		Expected seam error is at most 1 pixel (rounding only).
+		"""
+		q_num = 10
+		side, _ = self._side_and_row_idx(q_num)
+		print(f"\nSeam diagnostics (Q{q_num}, {side} side):")
+		for i in range(len(self._choices) - 1):
+			# get right edge of current choice
+			c_left = self._choices[i]
+			c_right = self._choices[i + 1]
+			_, _, _, right_edge = self.roi_bounds(q_num, c_left)
+			_, _, left_edge, _ = self.roi_bounds(q_num, c_right)
+			# seam error: should be 0 (or at most 1 from rounding)
+			seam_error = left_edge - right_edge
+			print(f"  {c_left}->{c_right}: seam_error = {seam_error} px")
+
+	#============================================
 	def measure_cfg(self) -> dict:
 		"""Return measurement constants derived from timing-mark spacing.
 

@@ -7,15 +7,17 @@ to preserve sub-pixel detail from the averaging process.
 
 Offline template construction pipeline:
 1. extract_roi_from_bounds() - crop at native resolution using lattice bounds
-2. _find_medoid_roi() - pick the most representative ROI as reference
-3. _align_roi_to_reference() - translation-only NCC alignment
-4. _apply_symmetry_augmentation() - mirror by letter symmetry
-5. _build_letter_template() - aligned average with outlier rejection
-6. _generate_template_mask() - derive bracket-emphasis mask
+2. _upscale_rois_to_canonical() - upscale all ROIs to canonical resolution
+3. _find_medoid_roi() - pick the most representative ROI as reference
+4. _align_roi_to_reference() - translation-only NCC alignment (two passes)
+5. _enforce_symmetry_image() / _enforce_symmetry_list() - post-alignment symmetry
+6. _build_letter_template() - two-pass aligned average with outlier rejection
+7. _generate_template_mask() - derive bracket-emphasis mask
 """
 
 # Standard Library
 import os
+import sys
 import time
 
 # PIP3 modules
@@ -32,16 +34,32 @@ import scipy.stats
 CANONICAL_TEMPLATE_WIDTH = 480
 CANONICAL_TEMPLATE_HEIGHT = 88
 
+# ANSI color codes for stderr diagnostics
+_GREEN = "\033[32m"
+_CYAN = "\033[36m"
+_RESET = "\033[0m"
+
+
+#============================================
+def _log_image_saved(filepath: str) -> None:
+	"""Print a colored diagnostic to stderr when an image is saved.
+
+	Args:
+		filepath: path to the saved image file
+	"""
+	sys.stderr.write(
+		f"  {_GREEN}SAVED{_RESET} {_CYAN}{filepath}{_RESET}\n")
+
 
 #============================================
 def extract_roi_from_bounds(gray: numpy.ndarray, left_x: int,
-	top_y: int, right_x: int, bot_y: int,
-	pad_factor: float = 0.4) -> numpy.ndarray:
-	"""Crop bubble ROI using explicit lattice bounds with padding.
+	top_y: int, right_x: int, bot_y: int) -> numpy.ndarray:
+	"""Crop bubble ROI using exact lattice bounds with no padding.
 
-	Accepts explicit pixel bounds only. Adds proportional padding for
-	alignment search room, clips to image edges, returns None if the
-	resulting region is too small.
+	Accepts explicit pixel bounds only. Crops exactly at the lattice
+	midpoint boundaries so neighboring slots tile without overlap or
+	gaps. Clips to image edges, returns None if the resulting region
+	is too small.
 
 	Args:
 		gray: grayscale image
@@ -49,27 +67,51 @@ def extract_roi_from_bounds(gray: numpy.ndarray, left_x: int,
 		top_y: top bound from SlotMap.roi_bounds()
 		right_x: right bound from SlotMap.roi_bounds()
 		bot_y: bottom bound from SlotMap.roi_bounds()
-		pad_factor: fractional padding beyond bounds (0.4 = 40%)
 
 	Returns:
 		numpy array (grayscale crop) or None if too small
 	"""
 	img_h, img_w = gray.shape
-	bounds_w = right_x - left_x
-	bounds_h = bot_y - top_y
-	# add proportional padding for alignment search room
-	pad_x = max(4.0, bounds_w * pad_factor)
-	pad_y = max(2.0, bounds_h * pad_factor)
-	# compute padded region, clipped to image edges
-	x1 = max(0, int(left_x - pad_x))
-	y1 = max(0, int(top_y - pad_y))
-	x2 = min(img_w, int(right_x + pad_x))
-	y2 = min(img_h, int(bot_y + pad_y))
+	# crop exactly at lattice bounds, clipped to image edges
+	x1 = max(0, left_x)
+	y1 = max(0, top_y)
+	x2 = min(img_w, right_x)
+	y2 = min(img_h, bot_y)
 	# reject if resulting region is too small
 	if (x2 - x1) < 5 or (y2 - y1) < 3:
 		return None
 	roi = gray[y1:y2, x1:x2].copy()
 	return roi
+
+
+#============================================
+def normalize_roi_percentile(roi: numpy.ndarray,
+	low_pct: int = 1, high_pct: int = 75) -> numpy.ndarray:
+	"""Percentile-based contrast stretch for a single ROI.
+
+	Linearly maps the [low_pct, high_pct] intensity range to [0, 255]
+	and clips. The asymmetric defaults (1/75) match typical bubble ROI
+	content: mostly white paper background with a small dark
+	bracket/letter feature.
+
+	Args:
+		roi: grayscale uint8 array
+		low_pct: percentile that maps to 0 (clips bottom)
+		high_pct: percentile that maps to 255 (clips top)
+
+	Returns:
+		contrast-stretched uint8 array, same shape as input
+	"""
+	# compute percentile anchors
+	low = numpy.percentile(roi, low_pct)
+	high = numpy.percentile(roi, high_pct)
+	# guard against flat patches where percentiles collapse
+	if high - low < 1:
+		return roi
+	# linear stretch from [low, high] to [0, 255], clip, cast
+	stretched = (roi.astype(numpy.float32) - low) * (255.0 / (high - low))
+	result = numpy.clip(stretched, 0, 255).astype(numpy.uint8)
+	return result
 
 
 #============================================
@@ -89,6 +131,7 @@ def save_templates(templates: dict, output_dir: str) -> list:
 		filename = f"{letter}.png"
 		filepath = os.path.join(output_dir, filename)
 		cv2.imwrite(filepath, template_img)
+		_log_image_saved(filepath)
 		saved_paths.append(filepath)
 	return saved_paths
 
@@ -96,12 +139,12 @@ def save_templates(templates: dict, output_dir: str) -> list:
 #============================================
 def scale_template_to_bubble(template_img: numpy.ndarray,
 	slot_width: int, slot_height: int) -> numpy.ndarray:
-	"""Scale a canonical high-res template down to local bubble size.
+	"""Scale a canonical high-res template down to exact slot size.
 
 	The template lives in a canonical high-resolution coordinate frame.
 	Runtime slot dimensions come from SlotMap.roi_bounds() lattice
-	geometry. The template is always scaled DOWN to match the actual
-	slot size with small padding for alignment room.
+	geometry. The template is scaled to exactly match the slot size
+	with no padding, so it tiles cleanly with neighboring slots.
 
 	Args:
 		template_img: canonical high-resolution template array
@@ -109,19 +152,176 @@ def scale_template_to_bubble(template_img: numpy.ndarray,
 		slot_height: slot height in pixels from roi_bounds (bot_y - top_y)
 
 	Returns:
-		scaled template array matching the expected bubble dimensions
+		scaled template array matching the exact slot dimensions
 	"""
-	# add small proportional padding for alignment search room
-	pad_x = max(2, int(slot_width * 0.1))
-	pad_y = max(1, int(slot_height * 0.2))
-	target_w = slot_width + pad_x * 2
-	target_h = slot_height + pad_y * 2
-	# ensure minimum size; int-cast for cv2.resize
-	target_w = int(max(target_w, 5))
-	target_h = int(max(target_h, 3))
+	# scale to exact slot size with no padding
+	target_w = int(max(slot_width, 5))
+	target_h = int(max(slot_height, 3))
 	scaled = cv2.resize(template_img, (target_w, target_h),
 		interpolation=cv2.INTER_AREA)
 	return scaled
+
+
+#============================================
+def _filter_dark_rois(rois: list,
+	reject_fraction: float = 0.2) -> tuple:
+	"""Discard the darkest ROIs by mean grayscale intensity.
+
+	Filled bubbles are darker than empty printed brackets. This
+	physically interpretable first-pass filter removes the darkest
+	fraction of ROIs before any NCC-based processing, preventing
+	filled bubbles from contaminating medoid selection and alignment.
+
+	Applied per image, per letter -- never globally.
+
+	Args:
+		rois: list of grayscale numpy arrays
+		reject_fraction: fraction of darkest ROIs to discard (0.2 = 20%)
+
+	Returns:
+		tuple of (kept_rois, rejected_rois, means, cutoff_value)
+		where means is a list of per-ROI mean intensities and
+		cutoff_value is the threshold used for filtering.
+		If fewer than 3 would survive, returns all (skip filtering).
+	"""
+	if len(rois) < 3:
+		# not enough to filter; return all as kept
+		means = [float(numpy.mean(r)) for r in rois]
+		return (list(rois), [], means, 0.0)
+	# compute mean grayscale intensity for each ROI
+	means = [float(numpy.mean(r)) for r in rois]
+	# sort indices by mean ascending (darkest first)
+	sorted_indices = sorted(range(len(rois)), key=lambda k: means[k])
+	# number to reject
+	n_reject = int(len(rois) * reject_fraction)
+	# safety: ensure at least 3 survive
+	n_kept = len(rois) - n_reject
+	if n_kept < 3:
+		return (list(rois), [], means, 0.0)
+	# split into rejected (darkest) and kept (brighter)
+	reject_set = set(sorted_indices[:n_reject])
+	# cutoff is the mean intensity of the last rejected ROI
+	cutoff_value = means[sorted_indices[n_reject - 1]] if n_reject > 0 else 0.0
+	kept_rois = []
+	rejected_rois = []
+	for i, roi in enumerate(rois):
+		if i in reject_set:
+			rejected_rois.append(roi)
+		else:
+			kept_rois.append(roi)
+	return (kept_rois, rejected_rois, means, cutoff_value)
+
+
+#============================================
+def _save_filter_qc(rois_before: list, rois_after: list,
+	image_id: str, letter: str, output_dir: str,
+	norm_rois_before: list = None,
+	norm_rois_after: list = None) -> None:
+	"""Save pre/post darkness filter QC images for one image-letter group.
+
+	Saves six raw images per group, plus two normalized montages when
+	normalized ROIs are provided:
+	- Raw ROI montage before filtering
+	- Simple mean ROI before filtering
+	- Simple median ROI before filtering
+	- ROI montage after darkest-20% reject
+	- Mean ROI after filtering
+	- Median ROI after filtering
+	- Normalized montage before filtering (if norm_rois_before given)
+	- Normalized montage after filtering (if norm_rois_after given)
+
+	Args:
+		rois_before: list of raw ROIs before darkness filtering
+		rois_after: list of raw ROIs after darkness filtering
+		image_id: scan identifier string
+		letter: bubble letter (A-E)
+		output_dir: directory for QC output
+		norm_rois_before: optional normalized ROIs before filtering
+		norm_rois_after: optional normalized ROIs after filtering
+	"""
+	qc_subdir = os.path.join(output_dir, "qc_darkness_filter")
+	os.makedirs(qc_subdir, exist_ok=True)
+	prefix = f"{image_id}_{letter}"
+	# helper: build a montage from a list of ROIs
+	def _build_montage(roi_list: list) -> numpy.ndarray:
+		if not roi_list:
+			return numpy.full((20, 20), 200, dtype=numpy.uint8)
+		# find common size (smallest dimensions)
+		min_h = min(r.shape[0] for r in roi_list)
+		min_w = min(r.shape[1] for r in roi_list)
+		# show up to 50 ROIs
+		show = roi_list[:50]
+		cols = min(len(show), 10)
+		rows = (len(show) + cols - 1) // cols
+		montage = numpy.full((min_h * rows, min_w * cols), 200,
+			dtype=numpy.uint8)
+		for idx, roi in enumerate(show):
+			r = idx // cols
+			c = idx % cols
+			# resize to common cell
+			cell = cv2.resize(roi, (min_w, min_h),
+				interpolation=cv2.INTER_AREA)
+			montage[r * min_h:(r + 1) * min_h,
+				c * min_w:(c + 1) * min_w] = cell
+		return montage
+
+	# helper: compute mean/median from ROI list
+	def _compute_avg(roi_list: list, mode: str) -> numpy.ndarray:
+		if not roi_list:
+			return numpy.full((20, 20), 200, dtype=numpy.uint8)
+		min_h = min(r.shape[0] for r in roi_list)
+		min_w = min(r.shape[1] for r in roi_list)
+		resized = []
+		for r in roi_list:
+			resized.append(cv2.resize(r, (min_w, min_h),
+				interpolation=cv2.INTER_AREA).astype(numpy.float32))
+		stack = numpy.stack(resized, axis=0)
+		if mode == "mean":
+			avg = numpy.mean(stack, axis=0)
+		else:
+			avg = numpy.median(stack, axis=0)
+		result = numpy.clip(avg, 0, 255).astype(numpy.uint8)
+		return result
+
+	# save before-filter images
+	montage_before = _build_montage(rois_before)
+	path = os.path.join(qc_subdir, f"{prefix}_1_raw_montage.png")
+	cv2.imwrite(path, montage_before)
+	_log_image_saved(path)
+	mean_before = _compute_avg(rois_before, "mean")
+	path = os.path.join(qc_subdir, f"{prefix}_2_raw_mean.png")
+	cv2.imwrite(path, mean_before)
+	_log_image_saved(path)
+	median_before = _compute_avg(rois_before, "median")
+	path = os.path.join(qc_subdir, f"{prefix}_3_raw_median.png")
+	cv2.imwrite(path, median_before)
+	_log_image_saved(path)
+	# save after-filter images
+	montage_after = _build_montage(rois_after)
+	path = os.path.join(qc_subdir, f"{prefix}_4_filtered_montage.png")
+	cv2.imwrite(path, montage_after)
+	_log_image_saved(path)
+	mean_after = _compute_avg(rois_after, "mean")
+	path = os.path.join(qc_subdir, f"{prefix}_5_filtered_mean.png")
+	cv2.imwrite(path, mean_after)
+	_log_image_saved(path)
+	median_after = _compute_avg(rois_after, "median")
+	path = os.path.join(qc_subdir, f"{prefix}_6_filtered_median.png")
+	cv2.imwrite(path, median_after)
+	_log_image_saved(path)
+	# save normalized montages if provided
+	if norm_rois_before is not None:
+		norm_montage_before = _build_montage(norm_rois_before)
+		path = os.path.join(qc_subdir,
+			f"{prefix}_1b_norm_montage.png")
+		cv2.imwrite(path, norm_montage_before)
+		_log_image_saved(path)
+	if norm_rois_after is not None:
+		norm_montage_after = _build_montage(norm_rois_after)
+		path = os.path.join(qc_subdir,
+			f"{prefix}_4b_norm_filtered_montage.png")
+		cv2.imwrite(path, norm_montage_after)
+		_log_image_saved(path)
 
 
 #============================================
@@ -264,70 +464,365 @@ def _apply_symmetry_augmentation(rois: list, letter: str) -> list:
 
 
 #============================================
-def _build_letter_template(rois: list, letter: str,
-	reject_threshold: float = 0.5) -> tuple:
-	"""Build a sharp per-letter template from aligned ROIs.
+def _upscale_rois_to_canonical(rois: list) -> list:
+	"""Upscale all ROIs to canonical high resolution for template construction.
 
-	Pipeline: symmetry augmentation -> medoid selection -> alignment
-	-> outlier rejection -> trimmed mean.
+	Eliminates size variation across scans (+/-1-2 px becomes irrelevant)
+	and gives NCC alignment more pixels to work with. This is a
+	template-construction canvas normalization step only; it does not
+	change SlotMap geometry or ROI ownership.
+
+	Args:
+		rois: list of grayscale numpy arrays at native resolution
+
+	Returns:
+		list of grayscale numpy arrays all at CANONICAL_TEMPLATE_WIDTH x
+		CANONICAL_TEMPLATE_HEIGHT
+	"""
+	canonical_w = CANONICAL_TEMPLATE_WIDTH
+	canonical_h = CANONICAL_TEMPLATE_HEIGHT
+	upscaled = []
+	for roi in rois:
+		resized = cv2.resize(roi, (canonical_w, canonical_h),
+			interpolation=cv2.INTER_CUBIC)
+		upscaled.append(resized)
+	return upscaled
+
+
+#============================================
+def _enforce_symmetry_image(roi: numpy.ndarray, letter: str) -> numpy.ndarray:
+	"""Average a single ROI with its own mirror for symmetry regularization.
+
+	Applied after alignment to sharpen features by exploiting known
+	letter symmetry. A has left-right symmetry; B/C/D/E have
+	top-bottom symmetry.
+
+	Args:
+		roi: grayscale uint8 array
+		letter: single letter string (A-E)
+
+	Returns:
+		symmetry-regularized uint8 array, same shape as input
+	"""
+	axis = _SYMMETRY_AXIS.get(letter, "tb")
+	if axis == "lr":
+		mirrored = numpy.fliplr(roi)
+	else:
+		mirrored = numpy.flipud(roi)
+	# average original and mirror, cast back to uint8
+	blended = (roi.astype(numpy.float32) + mirrored.astype(numpy.float32)) / 2.0
+	result = numpy.clip(blended, 0, 255).astype(numpy.uint8)
+	return result
+
+
+#============================================
+def _enforce_symmetry_list(rois: list, letter: str) -> list:
+	"""Apply symmetry regularization to each ROI in a list.
+
+	Calls _enforce_symmetry_image() on each ROI individually.
+	Applied after alignment, not before.
+
+	Args:
+		rois: list of grayscale numpy arrays
+		letter: single letter string (A-E)
+
+	Returns:
+		same-length list of symmetry-regularized uint8 arrays
+	"""
+	result = []
+	for roi in rois:
+		result.append(_enforce_symmetry_image(roi, letter))
+	return result
+
+
+#============================================
+def _mirror_ncc_score(roi: numpy.ndarray, letter: str) -> float:
+	"""Compute NCC between an ROI and its own mirror.
+
+	Measures how symmetric a single ROI is along the letter's known
+	symmetry axis. High score means the ROI already looks like its
+	mirror; low score means it is asymmetric (likely misaligned,
+	damaged, or filled).
+
+	Args:
+		roi: grayscale uint8 array
+		letter: single letter string (A-E)
+
+	Returns:
+		NCC score between roi and its mirror (float, -1 to 1)
+	"""
+	axis = _SYMMETRY_AXIS.get(letter, "tb")
+	if axis == "lr":
+		mirrored = numpy.fliplr(roi)
+	else:
+		mirrored = numpy.flipud(roi)
+	# compute NCC between original and mirror
+	r = roi.astype(numpy.float64)
+	m = mirrored.astype(numpy.float64)
+	r_norm = r - r.mean()
+	m_norm = m - m.mean()
+	denom = numpy.sqrt(numpy.sum(r_norm ** 2) * numpy.sum(m_norm ** 2))
+	if denom < 1e-6:
+		return 0.0
+	ncc = float(numpy.sum(r_norm * m_norm) / denom)
+	return ncc
+
+
+#============================================
+def _reject_asymmetric_rois(rois: list, letter: str,
+	reject_fraction: float = 0.1) -> tuple:
+	"""Reject the least symmetric ROIs by mirror NCC score.
+
+	After alignment, each ROI should be fairly symmetric along the
+	letter's known axis. ROIs that score poorly are likely misaligned
+	or contain filled bubbles that slipped through earlier filters.
+
+	Args:
+		rois: list of grayscale numpy arrays (all same shape)
+		letter: single letter string (A-E)
+		reject_fraction: fraction of worst-scoring ROIs to reject
+
+	Returns:
+		tuple of (kept_rois, kept_indices, scores) where scores is
+		the full list of per-ROI mirror NCC values. If fewer than 3
+		would survive, returns all (skip rejection).
+	"""
+	# compute mirror NCC for each ROI
+	scores = [_mirror_ncc_score(r, letter) for r in rois]
+	n_reject = int(len(rois) * reject_fraction)
+	n_kept = len(rois) - n_reject
+	# safety: need at least 3 survivors
+	if n_kept < 3:
+		kept_indices = list(range(len(rois)))
+		return (list(rois), kept_indices, scores)
+	# sort indices by score ascending (least symmetric first)
+	sorted_indices = sorted(range(len(rois)), key=lambda k: scores[k])
+	reject_set = set(sorted_indices[:n_reject])
+	kept_rois = []
+	kept_indices = []
+	for i, roi in enumerate(rois):
+		if i not in reject_set:
+			kept_rois.append(roi)
+			kept_indices.append(i)
+	return (kept_rois, kept_indices, scores)
+
+
+#============================================
+def _build_small_montage(rois: list, max_count: int = 20) -> numpy.ndarray:
+	"""Build a small montage grid from a list of same-sized ROIs.
+
+	Args:
+		rois: list of grayscale numpy arrays (should all be same size)
+		max_count: maximum number of ROIs to include
+
+	Returns:
+		grayscale montage image
+	"""
+	if not rois:
+		return numpy.full((20, 20), 200, dtype=numpy.uint8)
+	show = rois[:max_count]
+	cell_h, cell_w = show[0].shape[:2]
+	cols = min(len(show), 10)
+	rows = (len(show) + cols - 1) // cols
+	montage = numpy.full((cell_h * rows, cell_w * cols), 200,
+		dtype=numpy.uint8)
+	for idx, roi in enumerate(show):
+		r = idx // cols
+		c = idx % cols
+		# resize to cell size if needed
+		if roi.shape[0] != cell_h or roi.shape[1] != cell_w:
+			cell = cv2.resize(roi, (cell_w, cell_h),
+				interpolation=cv2.INTER_AREA)
+		else:
+			cell = roi
+		montage[r * cell_h:(r + 1) * cell_h,
+			c * cell_w:(c + 1) * cell_w] = cell
+	return montage
+
+
+#============================================
+def _build_letter_template(rois: list, letter: str,
+	reject_threshold: float = 0.5,
+	output_dir: str = None) -> tuple:
+	"""Build a sharp per-letter template via two-pass alignment.
+
+	Pipeline:
+	  upscale_to_canonical -> medoid -> pass1_align -> interim_avg
+	  -> symmetry_image(interim) -> pass2_align -> mirror_reject
+	  -> symmetry_list -> trim_mean
+
+	Pass 1 aligns to the single-ROI medoid. Pass 2 re-aligns
+	original canonical ROIs to the symmetry-regularized interim
+	average. After pass 2, the worst 10% by mirror NCC are rejected
+	(asymmetric ROIs from misalignment or filled bubbles), then
+	symmetry regularization and trimmed mean produce the final
+	template.
 
 	Args:
 		rois: list of native-resolution grayscale ROI arrays
 		letter: bubble letter (A-E)
 		reject_threshold: minimum NCC score to keep an aligned ROI
+		output_dir: optional directory for per-pass QC images
 
 	Returns:
 		tuple of (template, mask, alignment_table) where:
-		- template: uint8 grayscale array
+		- template: uint8 grayscale array at canonical resolution
 		- mask: uint8 array emphasizing bracket structure
-		- alignment_table: list of dicts with dx, dy, score, kept
+		- alignment_table: list of dicts with dx, dy, score, kept, pass
 		Returns (None, None, []) if fewer than 3 ROIs survive
 	"""
 	if len(rois) < 3:
 		return (None, None, [])
-	# apply symmetry augmentation to double sample count
-	augmented = _apply_symmetry_augmentation(rois, letter)
-	# find the medoid as alignment reference
-	n_aug = len(augmented)
-	print(f"    finding medoid in {n_aug} augmented ROIs...")
+	# --- upscale all ROIs to canonical resolution up front ---
+	canonical_rois = _upscale_rois_to_canonical(rois)
+	n_rois = len(canonical_rois)
+	# --- medoid selection on canonical-sized ROIs ---
+	print(f"    finding medoid in {n_rois} canonical ROIs...")
 	t0 = time.time()
-	medoid_idx = _find_medoid_roi(augmented)
+	medoid_idx = _find_medoid_roi(canonical_rois)
 	medoid_elapsed = time.time() - t0
 	print(f"    medoid found (idx {medoid_idx}, {medoid_elapsed:.1f}s)")
-	reference = augmented[medoid_idx]
-	# align all ROIs to reference
-	print(f"    aligning {n_aug} ROIs to reference...")
+	medoid_roi = canonical_rois[medoid_idx]
+	# save medoid QC image
+	if output_dir is not None:
+		qc_subdir = os.path.join(output_dir, "qc")
+		os.makedirs(qc_subdir, exist_ok=True)
+		path = os.path.join(qc_subdir, f"qc_{letter}_medoid.png")
+		cv2.imwrite(path, medoid_roi)
+		_log_image_saved(path)
+	# === PASS 1: align to medoid ===
+	print(f"    pass 1: aligning {n_rois} ROIs to medoid...")
 	t1 = time.time()
-	aligned_rois = []
+	pass1_aligned = []
 	alignment_table = []
-	for i, roi in enumerate(augmented):
-		aligned, dx, dy, score = _align_roi_to_reference(roi, reference)
+	for i, roi in enumerate(canonical_rois):
+		aligned, dx, dy, score = _align_roi_to_reference(roi, medoid_roi)
 		entry = {"index": i, "dx": dx, "dy": dy, "score": score,
-			"kept": score >= reject_threshold}
+			"kept": True, "pass": 1}
 		alignment_table.append(entry)
-		if score >= reject_threshold:
-			aligned_rois.append(aligned)
-	align_elapsed = time.time() - t1
-	print(f"    alignment done ({align_elapsed:.1f}s)")
-	# need at least 3 aligned ROIs for a good template
-	if len(aligned_rois) < 3:
+		pass1_aligned.append(aligned)
+	p1_elapsed = time.time() - t1
+	# compute pass-1 median alignment score
+	p1_scores = [e["score"] for e in alignment_table]
+	p1_median_score = float(numpy.median(p1_scores))
+	print(f"    pass 1 done ({p1_elapsed:.1f}s,"
+		f" median NCC={p1_median_score:.4f})")
+	if len(pass1_aligned) < 3:
 		return (None, None, alignment_table)
-	# upscale all aligned ROIs to canonical high resolution before averaging;
-	# this ensures the master template is always higher-res than any
-	# individual source, so runtime scaling always goes DOWN
-	canonical_w = CANONICAL_TEMPLATE_WIDTH
-	canonical_h = CANONICAL_TEMPLATE_HEIGHT
-	uniform = []
-	for ar in aligned_rois:
-		upscaled = cv2.resize(ar, (canonical_w, canonical_h),
-			interpolation=cv2.INTER_CUBIC)
-		uniform.append(upscaled.astype(numpy.float32))
-	# trimmed mean: reject top and bottom 10% at each pixel
-	stack = numpy.stack(uniform, axis=0)
-	template_float = scipy.stats.trim_mean(stack, proportiontocut=0.1, axis=0)
+	# --- reject worst 20% by mirror symmetry for pass-1 average ---
+	# these are excluded from the interim average only; all canonical
+	# ROIs still get a second chance in pass 2 against the sharper ref
+	p1_kept, p1_kept_indices, p1_mirror_scores = _reject_asymmetric_rois(
+		pass1_aligned, letter, reject_fraction=0.5)
+	n_p1_mirror_rejected = len(pass1_aligned) - len(p1_kept)
+	p1_mirror_arr = numpy.array(p1_mirror_scores)
+	print(f"    pass 1 mirror symmetry: min={float(p1_mirror_arr.min()):.4f}"
+		f" median={float(numpy.median(p1_mirror_arr)):.4f}"
+		f" max={float(p1_mirror_arr.max()):.4f}"
+		f" rejected={n_p1_mirror_rejected}")
+	if len(p1_kept) < 3:
+		return (None, None, alignment_table)
+	# build pass-1 interim average from kept ROIs only
+	p1_stack = numpy.stack(
+		[a.astype(numpy.float32) for a in p1_kept], axis=0)
+	p1_avg = numpy.clip(numpy.mean(p1_stack, axis=0), 0, 255).astype(
+		numpy.uint8)
+	# apply symmetry regularization to interim average for pass-2 reference
+	p1_sym_avg = _enforce_symmetry_image(p1_avg, letter)
+	# save pass-1 QC images
+	if output_dir is not None:
+		qc_subdir = os.path.join(output_dir, "qc")
+		# pass-1 average before symmetry
+		path = os.path.join(qc_subdir, f"qc_{letter}_pass1_avg.png")
+		cv2.imwrite(path, p1_avg)
+		_log_image_saved(path)
+		# pass-1 average after symmetry (pass-2 reference)
+		path = os.path.join(qc_subdir, f"qc_{letter}_pass1_sym_avg.png")
+		cv2.imwrite(path, p1_sym_avg)
+		_log_image_saved(path)
+		# pass-1 montage (first 20 aligned ROIs)
+		p1_montage = _build_small_montage(pass1_aligned, max_count=20)
+		path = os.path.join(qc_subdir,
+			f"qc_{letter}_pass1_montage.png")
+		cv2.imwrite(path, p1_montage)
+		_log_image_saved(path)
+	# === PASS 2: re-align original canonical ROIs to symmetrized average ===
+	print(f"    pass 2: re-aligning {n_rois} ROIs"
+		" to symmetrized pass-1 average...")
+	t2 = time.time()
+	pass2_aligned = []
+	pass2_table = []
+	for i, roi in enumerate(canonical_rois):
+		aligned, dx, dy, score = _align_roi_to_reference(roi, p1_sym_avg)
+		entry = {"index": i, "dx": dx, "dy": dy, "score": score,
+			"kept": True, "pass": 2}
+		pass2_table.append(entry)
+		pass2_aligned.append(aligned)
+	p2_elapsed = time.time() - t2
+	# compute pass-2 median alignment score
+	p2_scores = [e["score"] for e in pass2_table]
+	p2_median_score = float(numpy.median(p2_scores))
+	print(f"    pass 2 done ({p2_elapsed:.1f}s,"
+		f" median NCC={p2_median_score:.4f})")
+	# append pass-2 entries to alignment table
+	alignment_table.extend(pass2_table)
+	if len(pass2_aligned) < 3:
+		return (None, None, alignment_table)
+	# --- reject least symmetric ROIs by mirror NCC ---
+	pass2_kept, kept_indices, mirror_scores = _reject_asymmetric_rois(
+		pass2_aligned, letter, reject_fraction=0.1)
+	n_mirror_rejected = len(pass2_aligned) - len(pass2_kept)
+	# mark rejected entries in pass2_table
+	reject_set = set(range(len(pass2_aligned))) - set(kept_indices)
+	for idx in reject_set:
+		pass2_table[idx]["kept"] = False
+	# compute mirror score stats for console output
+	mirror_arr = numpy.array(mirror_scores)
+	print(f"    mirror symmetry: min={float(mirror_arr.min()):.4f}"
+		f" median={float(numpy.median(mirror_arr)):.4f}"
+		f" max={float(mirror_arr.max()):.4f}"
+		f" rejected={n_mirror_rejected}")
+	if len(pass2_kept) < 3:
+		return (None, None, alignment_table)
+	# apply symmetry regularization to surviving pass-2 ROIs
+	pass2_sym = _enforce_symmetry_list(pass2_kept, letter)
+	# build pass-2 average before symmetry (for QC comparison)
+	p2_stack_raw = numpy.stack(
+		[a.astype(numpy.float32) for a in pass2_kept], axis=0)
+	p2_avg_raw = numpy.clip(numpy.mean(p2_stack_raw, axis=0),
+		0, 255).astype(numpy.uint8)
+	# trimmed mean on symmetrized pass-2 ROIs: reject top/bottom 10%
+	p2_stack = numpy.stack(
+		[s.astype(numpy.float32) for s in pass2_sym], axis=0)
+	template_float = scipy.stats.trim_mean(
+		p2_stack, proportiontocut=0.1, axis=0)
 	template = numpy.clip(template_float, 0, 255).astype(numpy.uint8)
-	# generate mask from the template
+	# generate mask from the final template
 	mask = _generate_template_mask(template)
+	# save pass-2 QC images
+	if output_dir is not None:
+		qc_subdir = os.path.join(output_dir, "qc")
+		# pass-2 average before symmetry
+		path = os.path.join(qc_subdir, f"qc_{letter}_pass2_avg.png")
+		cv2.imwrite(path, p2_avg_raw)
+		_log_image_saved(path)
+		# pass-2 average after symmetry (final template)
+		path = os.path.join(qc_subdir, f"qc_{letter}_pass2_sym_avg.png")
+		cv2.imwrite(path, template)
+		_log_image_saved(path)
+		# pass-2 montage (first 20 aligned ROIs)
+		p2_montage = _build_small_montage(pass2_aligned, max_count=20)
+		path = os.path.join(qc_subdir,
+			f"qc_{letter}_pass2_montage.png")
+		cv2.imwrite(path, p2_montage)
+		_log_image_saved(path)
+		# final mask
+		path = os.path.join(qc_subdir, f"qc_{letter}_final_mask.png")
+		cv2.imwrite(path, mask)
+		_log_image_saved(path)
+	# print score comparison
+	print(f"    NCC improvement: pass1={p1_median_score:.4f}"
+		f" -> pass2={p2_median_score:.4f}")
 	return (template, mask, alignment_table)
 
 
@@ -412,11 +907,13 @@ def save_templates_and_masks(templates: dict, masks: dict,
 		# save template
 		filepath = os.path.join(output_dir, f"{letter}.png")
 		cv2.imwrite(filepath, template_img)
+		_log_image_saved(filepath)
 		saved_paths.append(filepath)
 	for letter, mask_img in sorted(masks.items()):
 		# save mask
 		filepath = os.path.join(output_dir, f"{letter}_mask.png")
 		cv2.imwrite(filepath, mask_img)
+		_log_image_saved(filepath)
 		saved_paths.append(filepath)
 	return saved_paths
 
@@ -489,4 +986,5 @@ def _save_qc_montage(rois: list, aligned_rois: list,
 	# save
 	filepath = os.path.join(output_dir, f"qc_{letter}.png")
 	cv2.imwrite(filepath, montage)
+	_log_image_saved(filepath)
 	return filepath

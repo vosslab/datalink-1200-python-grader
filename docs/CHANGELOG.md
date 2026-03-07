@@ -1,11 +1,70 @@
 # Changelog
 
+## 2026-03-10
+
+### Additions and New Features
+
+- Added `_upscale_rois_to_canonical()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Upscales all ROIs to canonical resolution (480x88) at the start of template construction, eliminating size variation across scans and giving NCC alignment more pixels to work with.
+- Added `_enforce_symmetry_image()` and `_enforce_symmetry_list()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Post-alignment symmetry regularization that averages each ROI with its own mirror (left-right for A, top-bottom for B-E). Applied after alignment instead of before, preventing misalignment from being codified into mirror copies.
+- Added `_mirror_ncc_score()` and `_reject_asymmetric_rois()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Computes NCC between each ROI and its own mirror to score symmetry. Applied after both passes: pass 1 rejects worst 20% from the interim average (ROIs still get a second chance in pass 2), pass 2 rejects worst 10% before the final trimmed mean.
+- Added `_build_small_montage()` helper to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Builds a grid montage from same-sized ROIs for QC output.
+- Added per-pass QC diagnostics to `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Saves medoid, pass-1 avg, pass-1 symmetrized avg, pass-2 avg, pass-2 symmetrized avg, final mask, and montages for both passes.
+
+### Behavior or Interface Changes
+
+- Restructured `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py) to two-pass alignment pipeline. Pass 1 aligns to medoid, builds interim average, applies symmetry regularization. Pass 2 re-aligns original canonical ROIs to the symmetrized interim average, then applies per-ROI symmetry before trimmed mean. Produces sharper bracket corners and letter stroke edges.
+- Removed pre-alignment symmetry augmentation call from `_build_letter_template()`. The `_apply_symmetry_augmentation()` function is retained in the module but no longer called in the template pipeline. Symmetry is now enforced post-alignment via `_enforce_symmetry_image()` and `_enforce_symmetry_list()`.
+- ROIs are now upscaled to canonical resolution (480x88) before medoid selection and alignment, rather than after. This eliminates hidden resizing inside `_find_medoid_roi()` from mixed ROI sizes across scans.
+- `_build_letter_template()` now accepts an optional `output_dir` parameter for QC image output.
+
+### Additions and New Features (cont.)
+
+- Added `normalize_roi_percentile()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Percentile-based contrast stretch (1st/75th percentile) that standardizes ROI intensity range across scans with different exposure or page darkness. Applied once per ROI at extraction time.
+- Added normalized QC montages to `_save_filter_qc()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). When normalized ROIs are provided, saves `_1b_norm_montage.png` (before filtering) and `_4b_norm_filtered_montage.png` (after filtering) alongside existing raw QC images.
+- Added `mean_grayscale_normalized` field to ROI metadata entries in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py).
+
+### Behavior or Interface Changes
+
+- Template building pipeline now uses percentile-normalized ROIs for all statistical stages (darkness filtering, NCC medoid selection, NCC alignment, trimmed-mean averaging) in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py). Raw ROIs are still saved to disk and used in raw QC montages. The normalization makes the darkest-20% cutoff scanner-exposure-independent.
+
+### Additions and New Features (earlier)
+
+- Added `print_seam_diagnostic()` to [omr_utils/slot_map.py](../omr_utils/slot_map.py). Prints seam errors between adjacent choice ROIs for Q10 to verify that lattice midpoint boundaries tile cleanly with at most 1 pixel rounding error.
+- Added `_log_image_saved()` helper and colored stderr diagnostics to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Every `cv2.imwrite` call now prints a green `SAVED` label with the cyan file path to stderr for visibility during template builds.
+
+### Behavior or Interface Changes
+
+- Removed 40% padding from `extract_roi_from_bounds()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). ROIs now crop exactly at lattice midpoint boundaries with no padding, so neighboring slots tile without overlap or gaps. Removed `pad_factor` parameter.
+- Removed 10-20% padding from `scale_template_to_bubble()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Templates now scale to exact slot dimensions with no padding, preventing neighboring letters from bleeding into each other.
+
+### Decisions and Failures
+
+- `SlotMap.roi_bounds()` midpoint geometry was already correct. The bleed between neighboring letter crops was caused entirely by hidden padding in downstream functions `extract_roi_from_bounds()` (40%) and `scale_template_to_bubble()` (10-20%).
+
+## 2026-03-09
+
+### Additions and New Features
+
+- Added `_filter_dark_rois()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Per-image per-letter darkness filter that discards the darkest 20% of ROIs by mean grayscale intensity before NCC-based processing. Prevents filled bubbles from contaminating medoid selection and alignment. Skips filtering if fewer than 3 ROIs would survive.
+- Added `_save_filter_qc()` to [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). Saves six QC images per image-letter group: raw montage, raw mean, raw median, filtered montage, filtered mean, and filtered median. Output goes to `qc_darkness_filter/` subdirectory.
+- Added per-image per-letter console diagnostics in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py). Prints raw count, min/median/max mean intensity, cutoff threshold, kept count, and rejected count for each image-letter group.
+- Extended ROI metadata entries with `mean_grayscale` (float) and `rejected_dark` (bool) fields in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py).
+
+### Behavior or Interface Changes
+
+- Disabled NCC hard rejection in `_build_letter_template()` in [omr_utils/bubble_template_extractor.py](../omr_utils/bubble_template_extractor.py). All aligned ROIs are now kept regardless of NCC score; the upstream darkness filter handles outlier removal instead. NCC scores are still computed and logged for diagnostics.
+- Template building pipeline now applies darkest-20% rejection per image per letter before pooling ROIs globally in [tools/build_bubble_templates.py](../tools/build_bubble_templates.py).
+
 ## 2026-03-08
 
 ### Fixes and Maintenance
 
 - Replaced broken prediction-slot rounding with ordered subsequence matching for footprint column labeling in `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). The old formula `round((pred_x - fp_x0_raw) / fp_spacing)` produced wrong column assignments because the model grid index is not a sequential index into the labeled columns list. The new algorithm enumerates all monotonic assignments of observed marks to labeled columns and picks the one with the tightest pitch consistency (lowest MAD). Requires minimum 3 matched points.
 - Added `_score_ordered_assignment()` helper in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). Scores a candidate `(label_col, obs_x)` assignment by pairwise pitch median absolute deviation and x-residual.
+
+### Behavior or Interface Changes
+
+- Debug overlay now labels top timing marks with their actual column numbers (1, 4, 7, 8, 9, 11) instead of sequential M1-M7. Labels are large white text with black outline for contrast against magenta. Unmatched marks show "?" instead of a column number. Stored in `transform["top_mark_col_labels"]` as an `obs_x -> col_num` map.
 
 ### Additions and New Features
 

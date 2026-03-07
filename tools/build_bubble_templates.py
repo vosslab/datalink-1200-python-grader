@@ -22,6 +22,7 @@ import argparse
 
 # PIP3 modules
 import cv2
+import numpy
 
 # local repo modules
 import omr_utils.bubble_template_extractor
@@ -79,7 +80,8 @@ def _find_scan_images(input_dir: str) -> list:
 
 #============================================
 def _extract_rois_from_scan(image_path: str, template: dict,
-	output_dir: str, metadata: list) -> dict:
+	output_dir: str, metadata: list,
+	reject_fraction: float = 0.2) -> dict:
 	"""Extract bubble ROIs from all slots in a single scan image.
 
 	Iterates all question/choice slots via SlotMap directly, without
@@ -123,6 +125,10 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 	attempted = 0
 	extracted = 0
 	skipped_bounds = 0
+	# collect raw and normalized ROIs and their metadata entries per letter
+	raw_rois_by_letter = {c: [] for c in choices}
+	norm_rois_by_letter = {c: [] for c in choices}
+	meta_entries_by_letter = {c: [] for c in choices}
 	for q_num in range(1, num_questions + 1):
 		for choice in choices:
 			attempted += 1
@@ -133,25 +139,80 @@ def _extract_rois_from_scan(image_path: str, template: dict,
 				skipped_bounds += 1
 				continue
 			extracted += 1
-			# save ROI to letter subdirectory
+			# normalize ROI for statistical stages
+			norm_roi = omr_utils.bubble_template_extractor.normalize_roi_percentile(roi)
+			# save raw ROI to letter subdirectory
 			letter_dir = os.path.join(output_dir, choice)
 			os.makedirs(letter_dir, exist_ok=True)
 			roi_filename = f"{scan_id}_q{q_num:03d}_{choice}.png"
 			roi_path = os.path.join(letter_dir, roi_filename)
 			cv2.imwrite(roi_path, roi)
-			rois_by_letter[choice].append(roi)
-			# record metadata
+			raw_rois_by_letter[choice].append(roi)
+			norm_rois_by_letter[choice].append(norm_roi)
+			# build metadata entry
 			cx, cy = slot_map.center(q_num, choice)
-			metadata.append({
+			meta_entries_by_letter[choice].append({
 				"scan_id": scan_id,
 				"question": q_num,
 				"choice": choice,
 				"center_x": int(cx),
 				"center_y": int(cy),
 				"roi_path": roi_path,
+				"mean_grayscale": float(numpy.mean(roi)),
+				"mean_grayscale_normalized": float(numpy.mean(norm_roi)),
+				"rejected_dark": False,
 			})
 	print(f"    slots: {attempted} attempted, {extracted} extracted, "
 		f"{skipped_bounds} bounds-skip")
+	# apply per-image per-letter darkness filter using normalized ROIs
+	for letter in sorted(raw_rois_by_letter.keys()):
+		raw_list = raw_rois_by_letter[letter]
+		norm_list = norm_rois_by_letter[letter]
+		entries = meta_entries_by_letter[letter]
+		if not raw_list:
+			continue
+		# run darkness filter on normalized ROIs for exposure independence
+		norm_kept, norm_rejected, means, cutoff = (
+			omr_utils.bubble_template_extractor._filter_dark_rois(
+				norm_list, reject_fraction))
+		# compute summary statistics for console output
+		means_arr = numpy.array(means)
+		min_mean = float(numpy.min(means_arr))
+		med_mean = float(numpy.median(means_arr))
+		max_mean = float(numpy.max(means_arr))
+		n_rejected = len(norm_rejected)
+		n_kept = len(norm_kept)
+		# console output per image-letter group
+		print(f"  image {scan_id} letter {letter}:"
+			f"  raw={len(raw_list)}"
+			f"  mean intensity: min={min_mean:.1f}"
+			f" median={med_mean:.1f} max={max_mean:.1f}")
+		print(f"    cutoff({reject_fraction*100:.0f}%)={cutoff:.1f}"
+			f"  kept={n_kept} rejected_dark={n_rejected}")
+		# identify which indices were rejected so we can sync raw lists
+		reject_set = set()
+		sorted_indices = sorted(range(len(norm_list)),
+			key=lambda k: means[k])
+		for idx in sorted_indices[:n_rejected]:
+			reject_set.add(idx)
+		# mark rejected entries in metadata
+		for idx in range(len(entries)):
+			entries[idx]["mean_grayscale"] = float(numpy.mean(raw_list[idx]))
+			entries[idx]["rejected_dark"] = idx in reject_set
+		# extend metadata list
+		metadata.extend(entries)
+		# build kept lists for raw (QC audit) and normalized (downstream)
+		raw_kept = [raw_list[i] for i in range(len(raw_list))
+			if i not in reject_set]
+		norm_kept_synced = [norm_list[i] for i in range(len(norm_list))
+			if i not in reject_set]
+		# save QC images with both raw and normalized montages
+		omr_utils.bubble_template_extractor._save_filter_qc(
+			raw_list, raw_kept, scan_id, letter, output_dir,
+			norm_rois_before=norm_list,
+			norm_rois_after=norm_kept_synced)
+		# store normalized kept ROIs for downstream template building
+		rois_by_letter[letter] = norm_kept_synced
 	return rois_by_letter
 
 
@@ -176,11 +237,11 @@ def _build_templates(all_rois: dict, output_dir: str,
 		if len(rois) < 6:
 			print(f"    SKIP: not enough ROIs for letter {letter}")
 			continue
-		# build template with alignment and outlier rejection
+		# build template with two-pass alignment and symmetry
 		t_start = time.time()
 		template, mask, alignment_table = (
 			omr_utils.bubble_template_extractor._build_letter_template(
-				rois, letter))
+				rois, letter, output_dir=output_dir))
 		t_elapsed = time.time() - t_start
 		if template is None:
 			print(f"    SKIP: template construction failed for {letter}")

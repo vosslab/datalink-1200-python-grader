@@ -6,4 +6,5 @@ source source_me.sh && ./run_pipeline.py -i scantrons/ \
   -k scantrons/804D5A50-key.jpg \
   -o output/ -d
 
-open output/*.png
+sleep 1
+output/*_debug.png

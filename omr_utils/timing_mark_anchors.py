@@ -599,6 +599,23 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 							f"fp_x0={fp_x0:.1f}px")
 						transform["top_col_spacing"] = col_pitch
 						transform["top_fp_x0"] = fp_x0
+						# build obs_x -> col_label map for overlay
+						matched_xs = set()
+						col_label_map = {}
+						for col, obs_x in match_pairs:
+							col_label_map[obs_x] = col
+							matched_xs.add(obs_x)
+						# back-project unmatched marks using fit
+						for mark in top_marks_image:
+							mx = mark["center_x"]
+							if mx not in matched_xs:
+								# nearest column from fitted grid
+								col_float = (mx - fp_x0) / col_pitch
+								col_int = round(col_float)
+								col_label_map[mx] = col_int
+								print(f"    back-projected x={mx:.1f}"
+									f" -> col {col_int}")
+						transform["top_mark_col_labels"] = col_label_map
 					else:
 						# fallback: no valid pairs
 						print("  WARNING: no valid labeled-column"
@@ -797,19 +814,43 @@ def draw_timing_mark_debug(image: numpy.ndarray,
 		cv2.putText(debug, "gap-B", (5, mid_y),
 			cv2.FONT_HERSHEY_SIMPLEX, 0.25, (128, 128, 128), 1)
 	# draw final top primary row marks (magenta) with vertical guide lines
+	# label map: obs_x -> column number from ordered assignment
+	col_label_map = transform.get("top_mark_col_labels", {})
+	# dark green text with black outline for contrast against magenta
+	label_fg = (0, 100, 0)
+	label_bg = (0, 0, 0)
+	label_scale = 0.7
+	label_thick = 2
 	top_marks = transform.get("top_marks", [])
 	for idx, mark in enumerate(top_marks):
 		bx, by, bw, bh = mark["bbox"]
 		# magenta bounding box around each block
 		cv2.rectangle(debug, (bx, by), (bx + bw, by + bh), magenta, 2)
-		# label M1..Mn (count not forced) below the block
-		label_text = f"M{idx + 1}"
-		label_x = bx
-		label_y = by + bh + 12
+		# look up labeled column number by center_x
+		mark_cx = mark["center_x"]
+		col_num = col_label_map.get(mark_cx)
+		if col_num is not None:
+			label_text = str(col_num)
+		else:
+			# fallback: unlabeled mark gets question mark
+			label_text = "?"
+		# draw large label centered below the bounding box
+		text_size = cv2.getTextSize(
+			label_text, cv2.FONT_HERSHEY_SIMPLEX,
+			label_scale, label_thick)[0]
+		# center text horizontally on the mark
+		label_x = bx + (bw - text_size[0]) // 2
+		label_y = by + bh + text_size[1] + 4
+		# black outline for contrast
 		cv2.putText(debug, label_text, (label_x, label_y),
-			cv2.FONT_HERSHEY_SIMPLEX, 0.35, magenta, 1)
+			cv2.FONT_HERSHEY_SIMPLEX, label_scale,
+			label_bg, label_thick + 2)
+		# white foreground text
+		cv2.putText(debug, label_text, (label_x, label_y),
+			cv2.FONT_HERSHEY_SIMPLEX, label_scale,
+			label_fg, label_thick)
 		# extend vertical guide line from block center-x down full page
-		cx = int(round(mark["center_x"]))
+		cx = int(round(mark_cx))
 		cv2.line(debug, (cx, 0), (cx, h), magenta, 1)
 	# draw Row-2 thin mark boxes (columns 10 and 12 of the footprint)
 	row2_color = (255, 128, 0)  # bright cyan-blue in BGR
