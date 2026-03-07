@@ -16,7 +16,7 @@ def _build_summary_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	"""
 	# bold font for header row
 	bold_font = openpyxl.styles.Font(bold=True)
-	headers = ["Student ID", "Raw Score", "Total", "Percentage"]
+	headers = ["Student ID", "Filename", "Raw Score", "Total", "Percentage"]
 	for col_idx, header in enumerate(headers, start=1):
 		cell = ws.cell(row=1, column=col_idx, value=header)
 		cell.font = bold_font
@@ -24,11 +24,12 @@ def _build_summary_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	sorted_results = sorted(graded_results, key=lambda g: g["student_id"])
 	for row_idx, graded in enumerate(sorted_results, start=2):
 		ws.cell(row=row_idx, column=1, value=graded["student_id"])
-		ws.cell(row=row_idx, column=2, value=graded["raw_score"])
-		ws.cell(row=row_idx, column=3, value=graded["total_questions"])
+		ws.cell(row=row_idx, column=2, value=graded.get("filename", ""))
+		ws.cell(row=row_idx, column=3, value=graded["raw_score"])
+		ws.cell(row=row_idx, column=4, value=graded["total_questions"])
 		# format percentage to 1 decimal place
 		pct_value = round(graded["percentage"], 1)
-		ws.cell(row=row_idx, column=4, value=pct_value)
+		ws.cell(row=row_idx, column=5, value=pct_value)
 
 
 #============================================
@@ -51,17 +52,20 @@ def _build_detailed_grades_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	# header row
 	header_cell = ws.cell(row=1, column=1, value="Student ID")
 	header_cell.font = bold_font
+	fn_cell = ws.cell(row=1, column=2, value="Filename")
+	fn_cell.font = bold_font
 	for q in range(1, num_questions + 1):
-		cell = ws.cell(row=1, column=q + 1, value=f"Q{q}")
+		cell = ws.cell(row=1, column=q + 2, value=f"Q{q}")
 		cell.font = bold_font
 	# data rows sorted by student_id
 	sorted_results = sorted(graded_results, key=lambda g: g["student_id"])
 	for row_idx, graded in enumerate(sorted_results, start=2):
 		ws.cell(row=row_idx, column=1, value=graded["student_id"])
+		ws.cell(row=row_idx, column=2, value=graded.get("filename", ""))
 		per_q = graded["per_question"]
 		for q in range(1, num_questions + 1):
 			score = per_q.get(q, -1)
-			col = q + 1
+			col = q + 2
 			if score == 1:
 				cell = ws.cell(row=row_idx, column=col, value=1)
 				cell.fill = green_fill
@@ -87,8 +91,10 @@ def _build_student_answers_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	# header row
 	header_cell = ws.cell(row=1, column=1, value="Student ID")
 	header_cell.font = bold_font
+	fn_cell = ws.cell(row=1, column=2, value="Filename")
+	fn_cell.font = bold_font
 	for q in range(1, num_questions + 1):
-		cell = ws.cell(row=1, column=q + 1, value=f"Q{q}")
+		cell = ws.cell(row=1, column=q + 2, value=f"Q{q}")
 		cell.font = bold_font
 	# first data row is the answer key labeled "KEY"
 	ws.cell(row=2, column=1, value="KEY")
@@ -96,18 +102,19 @@ def _build_student_answers_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	for q in range(1, num_questions + 1):
 		answer = key_answers.get(q, "")
 		if answer:
-			ws.cell(row=2, column=q + 1, value=answer)
+			ws.cell(row=2, column=q + 2, value=answer)
 	# student rows sorted by student_id
 	sorted_students = sorted(
 		student_results, key=lambda s: s["student_id"]
 	)
 	for row_idx, student in enumerate(sorted_students, start=3):
 		ws.cell(row=row_idx, column=1, value=student["student_id"])
+		ws.cell(row=row_idx, column=2, value=student.get("filename", ""))
 		student_answers = student["answers"]
 		for q in range(1, num_questions + 1):
 			answer = student_answers.get(q, "")
 			if answer:
-				ws.cell(row=row_idx, column=q + 1, value=answer)
+				ws.cell(row=row_idx, column=q + 2, value=answer)
 
 
 #============================================

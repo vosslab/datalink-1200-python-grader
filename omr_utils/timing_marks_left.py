@@ -317,9 +317,39 @@ def _fit_left_footprint(family: list) -> dict:
 		boundary = big_gap_indices[0]
 		upper_ys = cy_vals[:boundary + 1]
 		seg_c_ys = cy_vals[boundary + 1:]
-		# first 2 of upper = top, rest = ID
-		seg_a_ys = upper_ys[:N_TOP]
-		seg_b_ys = upper_ys[N_TOP:]
+		# split upper group into top marks and ID marks
+		# look for the largest internal gap to find the top/ID boundary
+		if len(upper_ys) >= 12:
+			# expected 2 top + 10 ID: find largest internal gap
+			upper_gaps = [upper_ys[i + 1] - upper_ys[i]
+				for i in range(len(upper_ys) - 1)]
+			split_idx = max(range(len(upper_gaps)),
+				key=lambda k: upper_gaps[k]) + 1
+			# validate: top segment should have 1-2 marks
+			if split_idx <= 2:
+				seg_a_ys = upper_ys[:split_idx]
+				seg_b_ys = upper_ys[split_idx:]
+			else:
+				# fallback: assume first 2 are top
+				seg_a_ys = upper_ys[:N_TOP]
+				seg_b_ys = upper_ys[N_TOP:]
+		elif len(upper_ys) <= 10:
+			# top 2 marks are missing, all upper marks are ID
+			seg_a_ys = []
+			seg_b_ys = list(upper_ys)
+		else:
+			# 11 marks: find largest internal gap for split
+			upper_gaps = [upper_ys[i + 1] - upper_ys[i]
+				for i in range(len(upper_ys) - 1)]
+			split_idx = max(range(len(upper_gaps)),
+				key=lambda k: upper_gaps[k]) + 1
+			if split_idx <= 2:
+				seg_a_ys = upper_ys[:split_idx]
+				seg_b_ys = upper_ys[split_idx:]
+			else:
+				# one top mark missing, take first 1 as top
+				seg_a_ys = upper_ys[:1]
+				seg_b_ys = upper_ys[1:]
 	else:
 		# no big gaps: use count-based split (first 12 = upper, rest = lower)
 		seg_a_ys = cy_vals[:N_TOP]
@@ -339,9 +369,7 @@ def _fit_left_footprint(family: list) -> dict:
 		print("  Left footprint: question segment too small "
 			f"({len(seg_c_ys)})")
 		return None
-	if len(seg_a_ys) < 1:
-		print("  Left footprint: top segment empty")
-		return None
+	# empty top segment is OK -- we can predict top marks from ID marks
 	# compute per-segment spacings from observed marks
 	if len(seg_b_ys) >= 2:
 		b_gaps = [seg_b_ys[i + 1] - seg_b_ys[i]
@@ -357,10 +385,20 @@ def _fit_left_footprint(family: list) -> dict:
 		s_q = med_gap
 	# step 5: generate exactly N_TOP/N_ID/N_Q predictions per segment
 	# segment A: 2 marks anchored at the first observed top mark
-	pred_a = [seg_a_ys[0] + i * s_id for i in range(N_TOP)]
-	# use observed marks if we have exactly 2
 	if len(seg_a_ys) == N_TOP:
+		# use observed marks when we have exactly 2
 		pred_a = list(seg_a_ys)
+	elif len(seg_a_ys) == 1:
+		# one top mark found, predict the second from spacing
+		pred_a = [seg_a_ys[0] + i * s_id for i in range(N_TOP)]
+	elif seg_b_ys:
+		# no top marks found, extrapolate backward from first ID mark
+		top_start = seg_b_ys[0] - N_TOP * s_id * 2.0
+		pred_a = [top_start + i * s_id for i in range(N_TOP)]
+	else:
+		# fallback: extrapolate from question segment
+		pred_a = [seg_c_ys[0] - (N_TOP + N_ID) * s_id
+			+ i * s_id for i in range(N_TOP)]
 	# segment B: 10 marks anchored at the first observed ID mark
 	if seg_b_ys:
 		pred_b = [seg_b_ys[0] + i * s_id for i in range(N_ID)]

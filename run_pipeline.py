@@ -251,6 +251,9 @@ def main() -> None:
 		student_data = omr_utils.csv_writer.read_answers_csv(
 			student_result["csv_path"])
 		graded = grade_answers.grade_student(student_data, key_data)
+		# attach filename for XLSX traceability
+		graded["filename"] = base_name
+		student_data["filename"] = base_name
 		grade_csv = os.path.join(args.output_dir, f"{base_name}_grades.csv")
 		grade_answers.write_graded_csv(grade_csv, graded, student_data, key_data)
 		print(f"    score: {graded['raw_score']}/{graded['total_questions']}"

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-03-14
+
+### Fixes and Maintenance
+
+- Fixed student ID timing mark detection in [omr_utils/timing_marks_left.py](../omr_utils/timing_marks_left.py). The one-big-gap partitioning in `_fit_left_footprint()` was stealing the first 2 student ID marks as "top marks" when the actual top 2 marks were not detected. Now uses largest-internal-gap detection within the upper group to correctly split top marks from ID marks. Handles the case where all 10 upper marks are ID marks (top 2 missing) by setting `seg_a_ys` to empty and predicting top marks by backward extrapolation.
+
+### Additions and New Features
+
+- Added "Filename" column to Summary, Detailed Grades, and Student Answers sheets in `scoring_summary.xlsx`. Source image base name is threaded through [run_pipeline.py](../run_pipeline.py) into graded results and written by [omr_utils/xlsx_writer.py](../omr_utils/xlsx_writer.py).
+
+### Decisions and Failures
+
+- Student IDs were reading with first digit 7 instead of 9, confirming exactly 2 marks were being stolen from the ID segment. Root cause was the `upper_ys[:2]` hard-coded split in the one-big-gap branch.
+
 ## 2026-03-13
 
 ### Additions and New Features

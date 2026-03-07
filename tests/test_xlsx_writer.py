@@ -27,12 +27,14 @@ def synthetic_data(tmp_path: os.PathLike) -> dict:
 	}
 	student1 = {
 		"student_id": "S001",
+		"filename": "scan_001",
 		"answers": {1: "A", 2: "B", 3: "A", 4: "D", 5: ""},
 		"confidences": {1: 0.4, 2: 0.3, 3: 0.2, 4: 0.5, 5: 0.0},
 		"flags": "",
 	}
 	student2 = {
 		"student_id": "S002",
+		"filename": "scan_002",
 		"answers": {1: "C", 2: "B", 3: "C", 4: "D", 5: "E"},
 		"confidences": {1: 0.1, 2: 0.4, 3: 0.5, 4: 0.3, 5: 0.2},
 		"flags": "",
@@ -40,6 +42,7 @@ def synthetic_data(tmp_path: os.PathLike) -> dict:
 	student_results = [student1, student2]
 	graded1 = {
 		"student_id": "S001",
+		"filename": "scan_001",
 		"raw_score": 3,
 		"total_questions": 5,
 		"percentage": 60.0,
@@ -48,6 +51,7 @@ def synthetic_data(tmp_path: os.PathLike) -> dict:
 	}
 	graded2 = {
 		"student_id": "S002",
+		"filename": "scan_002",
 		"raw_score": 4,
 		"total_questions": 5,
 		"percentage": 80.0,
@@ -100,13 +104,15 @@ def test_summary_values(synthetic_data: dict) -> None:
 	ws = wb["Summary"]
 	# row 2 = S001 (sorted first), row 3 = S002
 	assert ws.cell(row=2, column=1).value == "S001"
-	assert ws.cell(row=2, column=2).value == 3
-	assert ws.cell(row=2, column=3).value == 5
-	assert ws.cell(row=2, column=4).value == 60.0
+	assert ws.cell(row=2, column=2).value == "scan_001"
+	assert ws.cell(row=2, column=3).value == 3
+	assert ws.cell(row=2, column=4).value == 5
+	assert ws.cell(row=2, column=5).value == 60.0
 	assert ws.cell(row=3, column=1).value == "S002"
-	assert ws.cell(row=3, column=2).value == 4
-	assert ws.cell(row=3, column=3).value == 5
-	assert ws.cell(row=3, column=4).value == 80.0
+	assert ws.cell(row=3, column=2).value == "scan_002"
+	assert ws.cell(row=3, column=3).value == 4
+	assert ws.cell(row=3, column=4).value == 5
+	assert ws.cell(row=3, column=5).value == 80.0
 
 
 #============================================
@@ -115,15 +121,16 @@ def test_detailed_grades_values(synthetic_data: dict) -> None:
 	wb = openpyxl.load_workbook(synthetic_data["xlsx_path"])
 	ws = wb["Detailed Grades"]
 	# row 2 = S001: per_question {1:1, 2:1, 3:0, 4:1, 5:-1}
-	assert ws.cell(row=2, column=2).value == 1   # Q1 correct
-	assert ws.cell(row=2, column=3).value == 1   # Q2 correct
-	assert ws.cell(row=2, column=4).value == 0   # Q3 incorrect
-	assert ws.cell(row=2, column=5).value == 1   # Q4 correct
-	assert ws.cell(row=2, column=6).value is None  # Q5 not graded
+	assert ws.cell(row=2, column=2).value == "scan_001"  # Filename
+	assert ws.cell(row=2, column=3).value == 1   # Q1 correct
+	assert ws.cell(row=2, column=4).value == 1   # Q2 correct
+	assert ws.cell(row=2, column=5).value == 0   # Q3 incorrect
+	assert ws.cell(row=2, column=6).value == 1   # Q4 correct
+	assert ws.cell(row=2, column=7).value is None  # Q5 not graded
 	# row 3 = S002: per_question {1:0, 2:1, 3:1, 4:1, 5:1}
-	assert ws.cell(row=3, column=2).value == 0   # Q1 incorrect
-	assert ws.cell(row=3, column=3).value == 1   # Q2 correct
-	assert ws.cell(row=3, column=6).value == 1   # Q5 correct
+	assert ws.cell(row=3, column=3).value == 0   # Q1 incorrect
+	assert ws.cell(row=3, column=4).value == 1   # Q2 correct
+	assert ws.cell(row=3, column=7).value == 1   # Q5 correct
 
 
 #============================================
@@ -133,17 +140,18 @@ def test_student_answers_values(synthetic_data: dict) -> None:
 	ws = wb["Student Answers"]
 	# row 2 should be the KEY row
 	assert ws.cell(row=2, column=1).value == "KEY"
-	assert ws.cell(row=2, column=2).value == "A"  # Q1
-	assert ws.cell(row=2, column=3).value == "B"  # Q2
-	assert ws.cell(row=2, column=6).value == "E"  # Q5
+	assert ws.cell(row=2, column=3).value == "A"  # Q1
+	assert ws.cell(row=2, column=4).value == "B"  # Q2
+	assert ws.cell(row=2, column=7).value == "E"  # Q5
 	# row 3 = S001 answers
 	assert ws.cell(row=3, column=1).value == "S001"
-	assert ws.cell(row=3, column=2).value == "A"  # Q1
-	assert ws.cell(row=3, column=4).value == "A"  # Q3 (wrong answer)
-	assert ws.cell(row=3, column=6).value is None  # Q5 blank
+	assert ws.cell(row=3, column=2).value == "scan_001"  # Filename
+	assert ws.cell(row=3, column=3).value == "A"  # Q1
+	assert ws.cell(row=3, column=5).value == "A"  # Q3 (wrong answer)
+	assert ws.cell(row=3, column=7).value is None  # Q5 blank
 	# row 4 = S002 answers
 	assert ws.cell(row=4, column=1).value == "S002"
-	assert ws.cell(row=4, column=2).value == "C"  # Q1
+	assert ws.cell(row=4, column=3).value == "C"  # Q1
 
 
 #============================================

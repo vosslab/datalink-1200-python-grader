@@ -3,7 +3,7 @@
 rm -f output/*;
 
 source source_me.sh && ./run_pipeline.py -i scantrons/ \
-  -k scantrons/804D5A50-key.jpg \
+  -k scantrons/43F257A7-key.jpg \
   -o output/ -d -r ncc
 
 sleep 0.1
