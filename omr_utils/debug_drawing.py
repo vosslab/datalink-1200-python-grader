@@ -281,6 +281,60 @@ def draw_column_lattice(image: numpy.ndarray,
 
 
 #============================================
+def draw_student_id_overlay(image: numpy.ndarray, template: dict,
+	slot_map: "omr_utils.slot_map.SlotMap") -> numpy.ndarray:
+	"""Draw student ID bubble ROI rectangles and center crosshairs.
+
+	Shows all 9x10 student ID positions with:
+	- Cyan ROI rectangles from sid_roi_bounds()
+	- Green center crosshairs from sid_center()
+	- Digit column labels (D0-D8) and value row labels (0-9)
+
+	Args:
+		image: BGR registered image
+		template: loaded template dictionary
+		slot_map: SlotMap instance with student ID geometry
+
+	Returns:
+		annotated copy of the image
+	"""
+	debug = image.copy()
+	sid_config = template.get("student_id", {})
+	num_digits = sid_config.get("num_digits", 9)
+	num_values = sid_config.get("num_values", 10)
+	# colors
+	cyan = (220, 220, 0)
+	green = (0, 220, 0)
+	yellow = (0, 220, 220)
+	# crosshair arm length
+	arm = 3
+	for d in range(num_digits):
+		for v in range(num_values):
+			# draw ROI rectangle
+			top_y, bot_y, left_x, right_x = slot_map.sid_roi_bounds(d, v)
+			cv2.rectangle(debug,
+				(int(left_x), int(top_y)),
+				(int(right_x), int(bot_y)),
+				cyan, 1)
+			# draw center crosshair
+			cx, cy = slot_map.sid_center(d, v)
+			cv2.line(debug, (cx - arm, cy), (cx + arm, cy), green, 1)
+			cv2.line(debug, (cx, cy - arm), (cx, cy + arm), green, 1)
+		# label digit column at top
+		cx, cy = slot_map.sid_center(d, 0)
+		label = f"D{d}"
+		cv2.putText(debug, label, (cx - 6, cy - 10),
+			cv2.FONT_HERSHEY_SIMPLEX, 0.3, yellow, 1)
+	# label value rows on the left side
+	for v in range(num_values):
+		cx, cy = slot_map.sid_center(0, v)
+		label = str(v)
+		cv2.putText(debug, label, (cx - 18, cy + 3),
+			cv2.FONT_HERSHEY_SIMPLEX, 0.3, yellow, 1)
+	return debug
+
+
+#============================================
 def draw_combined_debug(image: numpy.ndarray, template: dict,
 	transform: dict, results: list, measure_cfg: dict,
 	slot_map: "omr_utils.slot_map.SlotMap") -> numpy.ndarray:
@@ -311,4 +365,6 @@ def draw_combined_debug(image: numpy.ndarray, template: dict,
 	# overlay answer bubbles with detection zones
 	debug = draw_answer_debug(debug, template, results, measure_cfg,
 		slot_map=slot_map)
+	# overlay student ID positions
+	debug = draw_student_id_overlay(debug, template, slot_map)
 	return debug

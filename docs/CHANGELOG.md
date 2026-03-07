@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-03-08
+
+### Fixes and Maintenance
+
+- Replaced broken prediction-slot rounding with ordered subsequence matching for footprint column labeling in `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). The old formula `round((pred_x - fp_x0_raw) / fp_spacing)` produced wrong column assignments because the model grid index is not a sequential index into the labeled columns list. The new algorithm enumerates all monotonic assignments of observed marks to labeled columns and picks the one with the tightest pitch consistency (lowest MAD). Requires minimum 3 matched points.
+- Added `_score_ordered_assignment()` helper in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). Scores a candidate `(label_col, obs_x)` assignment by pairwise pitch median absolute deviation and x-residual.
+
+### Additions and New Features
+
+- Replaced `footprint_column_stride: 3` with labeled column lists (`footprint_row1_columns`, `footprint_row1_thin_columns`, `footprint_row2_columns`) in [config/dl1200_template.yaml](../config/dl1200_template.yaml). Models the physical sheet's non-uniform mark spacing instead of assuming a blanket divide-by-N.
+- Added labeled-column col_pitch computation in `estimate_anchor_transform()` in [omr_utils/timing_mark_anchors.py](../omr_utils/timing_mark_anchors.py). Uses all valid matched-mark pairs to compute median col_pitch and fp_x0 from real column indices, replacing the stride-based `fp_spacing / col_stride` formula.
+- Added `print_roi_diagnostic()` to `SlotMap` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Prints ROI width/height/aspect for representative slots (Q10, Q50 x A, C, E) to verify landscape orientation.
+- Added K pixel products diagnostic print in `read_answers()` in [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py). Shows center_exclusion, inset_h, and refine_pad_h in pixels after the geometry summary line.
+
+### Behavior or Interface Changes
+
+- col_pitch is now computed from labeled column indices rather than dividing fp_spacing by a stride constant. This produces a larger col_pitch that matches the actual printed column spacing. ROI aspect ratios should now be landscape (width > height) without any width multiplier hacks.
+- Applied temporary /3 shim to horizontal K-constants (`_K_CENTER_EXCLUSION`, `_K_MEAS_INSET_H`, `_K_REFINE_PAD_H`) in [omr_utils/slot_map.py](../omr_utils/slot_map.py). These constants were tuned against the old artificially compressed col_pitch; the shim prevents measurement zones from tripling in width. Must be recalibrated from debug overlays with the corrected lattice.
+
+### Decisions and Failures
+
+- The /3 shim on horizontal K-constants is explicitly temporary. Proper recalibration from debug overlays is required as follow-up work. The shim preserves old measurement zone sizes until that calibration is done.
+
+- Added `sid_roi_bounds(digit_idx, value)` and `sid_center(digit_idx, value)` methods to `SlotMap` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Student ID geometry now uses the same lattice midpoint pattern as answer bubbles.
+- Added `_score_sid_bubble()`, `_compute_sid_bracket_edge_mean()`, and `_compute_sid_measurement_mean()` bounds-based scoring functions in [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py). These take explicit `(top_y, bot_y, left_x, right_x)` bounds from `sid_roi_bounds()`.
+- Added `draw_student_id_overlay()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py). Draws ROI rectangles and center crosshairs for all 9x10 student ID positions.
+- Added `id_columns` and `num_values` to student ID config in [config/dl1200_template.yaml](../config/dl1200_template.yaml). Student ID columns use the same 15-column lattice indices as answer bubbles.
+
+### Behavior or Interface Changes
+
+- Rewrote `read_student_id()` and `read_student_id_detailed()` in [omr_utils/student_id_reader.py](../omr_utils/student_id_reader.py). Signature changed from `(image, template, transform)` to `(image, template, slot_map)`. Now uses `SlotMap.sid_roi_bounds()` instead of normalized YAML coordinates.
+- Updated `process_single_image()` in [run_pipeline.py](../run_pipeline.py) to pass `slot_map` to `read_student_id()` instead of `raw_transform`.
+- `draw_combined_debug()` in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) now includes student ID overlay layer.
+- Updated section 5 of [docs/OMR_GEOMETRY_CONTRACT.md](../docs/OMR_GEOMETRY_CONTRACT.md) to state SlotMap is the authority for both answer and student ID positions.
+
+### Fixes and Maintenance
+
+- Renamed local variable `fine_step` to `col_pitch` in `SlotMap.__init__()` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Eliminates legacy naming; the variable is the column pitch from `top_col_spacing`.
+
+### Removals and Deprecations
+
+- Removed `student_id_geom()` from `SlotMap` in [omr_utils/slot_map.py](../omr_utils/slot_map.py). Replaced by `sid_roi_bounds()` and `sid_center()`.
+- Removed `get_student_id_coords()`, `to_pixels()`, and `get_bubble_radius_px()` from [omr_utils/template_loader.py](../omr_utils/template_loader.py) (zero callers after student ID refactor).
+- Removed `score_bubble_fast()` and `_compute_bracket_edge_mean()` from [omr_utils/bubble_reader.py](../omr_utils/bubble_reader.py) (zero callers after student ID refactor).
+- Removed normalized `student_id.grid` section (first_digit_x, digit_spacing_x, first_value_y, value_spacing_y) from [config/dl1200_template.yaml](../config/dl1200_template.yaml).
+
+### Decisions and Failures
+
+- Chose to port bracket-edge scoring logic into `_score_sid_bubble()` rather than reusing `_compute_bracket_edge_mean()` from bubble_reader. The student ID version takes explicit bounds instead of center coordinates, avoiding any center-plus-box reconstruction.
+- `_compute_edge_mean()` and `_compute_dual_zone_means()` in bubble_reader.py retained because `_stage_measure_rows()` still calls them for answer scoring.
+
 ## 2026-03-07
 
 ### Behavior or Interface Changes

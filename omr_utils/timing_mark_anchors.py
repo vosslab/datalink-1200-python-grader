@@ -1,5 +1,8 @@
 """Detect timing-mark anchors and build a relative coordinate transform."""
 
+# Standard Library
+import itertools
+
 # PIP3 modules
 import cv2
 import numpy
@@ -314,6 +317,50 @@ def _match_predictions_to_marks(predictions: list, marks: list,
 
 
 #============================================
+def _score_ordered_assignment(pairs: list) -> tuple:
+	"""Score a (label_col, obs_x) assignment by pitch consistency.
+
+	Computes pairwise pitch estimates from all pairs, then measures
+	how tightly they cluster using median absolute deviation. Lower
+	spread means more consistent geometry.
+
+	Args:
+		pairs: list of (label_col, obs_x) tuples
+
+	Returns:
+		(n_matched, neg_pitch_mad, neg_x_residual) -- higher is better
+	"""
+	if len(pairs) < 2:
+		return (len(pairs), 0.0, 0.0)
+	# pairwise pitch estimates from all combinations
+	pitch_estimates = []
+	for i in range(len(pairs)):
+		for j in range(i + 1, len(pairs)):
+			col_a, x_a = pairs[i]
+			col_b, x_b = pairs[j]
+			delta_col = col_b - col_a
+			if delta_col > 0:
+				pitch_estimates.append((x_b - x_a) / delta_col)
+	if not pitch_estimates:
+		return (len(pairs), 0.0, 0.0)
+	med_pitch = float(numpy.median(pitch_estimates))
+	# median absolute deviation of pitch estimates
+	pitch_mad = float(numpy.median(
+		[abs(p - med_pitch) for p in pitch_estimates]))
+	# x-residual: back-compute fp_x0, measure fit error
+	x0_estimates = [x - col * med_pitch for col, x in pairs]
+	med_x0 = float(numpy.median(x0_estimates))
+	x_residuals = [abs(x - (med_x0 + col * med_pitch))
+		for col, x in pairs]
+	med_x_resid = float(numpy.median(x_residuals))
+	# return tuple: more points better, lower spread better
+	n_matched = len(pairs)
+	neg_mad = -pitch_mad
+	neg_resid = -med_x_resid
+	return (n_matched, neg_mad, neg_resid)
+
+
+#============================================
 def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 	"""Estimate anchor-relative x/y transform from top and left timing marks.
 
@@ -464,21 +511,107 @@ def estimate_anchor_transform(gray: numpy.ndarray, template: dict) -> dict:
 					})
 				transform["top_row2_marks"] = r2_marks_image
 				fp_spacing = fp["model"]["spacing"]
-				fp_x0 = fp["model"]["x0"]
-				# coarse marks land every N local-lattice columns
-				col_stride = int(top_edge.get(
-					"footprint_column_stride", 3))
-				# A/B stride diagnostic: compare stride-1 vs stride-3
-				col_pitch_s1 = fp_spacing
-				col_pitch_s3 = fp_spacing / 3.0
-				print(f"  [stride A/B] fp_spacing={fp_spacing:.1f}px"
-					f"  stride-1 col_pitch={col_pitch_s1:.1f}px"
-					f"  stride-3 col_pitch={col_pitch_s3:.1f}px"
-					f"  using stride={col_stride}")
-				# local lattice column pitch
-				lattice_col_pitch = fp_spacing / max(1, col_stride)
-				transform["top_col_spacing"] = float(lattice_col_pitch)
-				transform["top_fp_x0"] = float(fp_x0)
+				fp_x0_raw = fp["model"]["x0"]
+				# labeled column indices for Row-1 large marks
+				labeled_cols = top_edge.get(
+					"footprint_row1_columns", [])
+				if labeled_cols:
+					# ordered subsequence matching: sort Row-1
+					# marks left-to-right, then enumerate all
+					# monotonic assignments to labeled columns
+					def _match_center_x(m: tuple) -> float:
+						"""Extract observed center_x from match."""
+						center_x = m[1]["center_x"]
+						return center_x
+					sorted_r1 = sorted(
+						fp.get("row1_matches", []),
+						key=_match_center_x)
+					obs_xs = [m[1]["center_x"]
+						for m in sorted_r1]
+					n_obs = len(obs_xs)
+					n_labels = len(labeled_cols)
+					# enumerate monotonic assignments
+					best_pairs = []
+					best_score = None
+					max_k = min(n_obs, n_labels)
+					if max_k >= 3:
+						for k in range(3, max_k + 1):
+							# all k-of-n_obs observed mark subsets
+							for obs_idx in itertools.combinations(
+									range(n_obs), k):
+								# all k-of-n_labels label subsets
+								for col_idx in itertools.combinations(
+										range(n_labels), k):
+									pairs = [
+										(labeled_cols[col_idx[i]],
+										obs_xs[obs_idx[i]])
+										for i in range(k)]
+									score = _score_ordered_assignment(
+										pairs)
+									# tuple comparison: more matched
+									# points, then tighter pitch
+									if (best_score is None
+											or score > best_score):
+										best_score = score
+										best_pairs = pairs
+					match_pairs = best_pairs
+					# diagnostic output for assignment
+					if best_score is not None:
+						print(
+							f"  Best assignment score: "
+							f"matched={best_score[0]} "
+							f"pitch_mad="
+							f"{-best_score[1]:.2f} "
+							f"x_resid="
+							f"{-best_score[2]:.2f}")
+					print(
+						f"  Ordered assignment: "
+						f"{len(match_pairs)} of "
+						f"{n_obs} marks -> "
+						f"{n_labels} labels")
+					# compute col_pitch from ALL valid pairs
+					pitch_estimates = []
+					for i in range(len(match_pairs)):
+						for j in range(i + 1, len(match_pairs)):
+							col_a, x_a = match_pairs[i]
+							col_b, x_b = match_pairs[j]
+							delta_col = col_b - col_a
+							if delta_col > 0:
+								estimate = (x_b - x_a) / delta_col
+								pitch_estimates.append(estimate)
+					if pitch_estimates:
+						col_pitch = float(
+							numpy.median(pitch_estimates))
+						# fp_x0 from median of all matched marks
+						x0_estimates = [
+							x - col * col_pitch
+							for col, x in match_pairs]
+						fp_x0 = float(numpy.median(x0_estimates))
+						# diagnostic mapping
+						print("  Footprint column mapping:")
+						for col, x in match_pairs:
+							print(f"    col {col:2d} -> "
+								f"x {x:.1f}px")
+						print(f"  col_pitch estimates: "
+							f"{[f'{e:.1f}' for e in pitch_estimates]}")
+						print(f"  col_pitch (median)="
+							f"{col_pitch:.1f}px  "
+							f"fp_x0={fp_x0:.1f}px")
+						transform["top_col_spacing"] = col_pitch
+						transform["top_fp_x0"] = fp_x0
+					else:
+						# fallback: no valid pairs
+						print("  WARNING: no valid labeled-column"
+							" pairs, falling back to fp_spacing")
+						transform["top_col_spacing"] = float(
+							fp_spacing)
+						transform["top_fp_x0"] = float(fp_x0_raw)
+				else:
+					# no labeled columns in YAML
+					print("  WARNING: no footprint_row1_columns "
+						"in YAML, using raw fp_spacing")
+					transform["top_col_spacing"] = float(fp_spacing)
+					transform["top_fp_x0"] = float(fp_x0_raw)
 				# confidence from mark count
 				n_marks = len(top_marks_image)
 				top_conf = min(1.0, n_marks / 6.0)

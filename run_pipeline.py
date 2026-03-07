@@ -127,9 +127,9 @@ def process_single_image(image_path: str, template: dict,
 	# build SlotMap from timing mark transform (single measure_cfgetry authority)
 	slot_map = omr_utils.slot_map.SlotMap(raw_transform, template)
 	measure_cfg = slot_map.measure_cfg()
-	# read student ID
+	# read student ID using SlotMap lattice geometry
 	student_id = omr_utils.student_id_reader.read_student_id(
-		registered, template, raw_transform)
+		registered, template, slot_map)
 	# read answer bubbles using SlotMap
 	answers = omr_utils.bubble_reader.read_answers(
 		registered, template, slot_map=slot_map)

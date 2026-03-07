@@ -18,7 +18,10 @@ timing_marks:
     y: 0.035
     start_x: 0.04
     end_x: 0.96
-    footprint_column_stride: 3
+    # labeled column indices for Row-1 and Row-2 marks
+    footprint_row1_columns: [1, 4, 7, 8, 9, 11]
+    footprint_row1_thin_columns: [12]
+    footprint_row2_columns: [10, 12]
 
 answers:
   answer_lattice_columns: 15
@@ -60,9 +63,5 @@ answers:
 
 student_id:
   num_digits: 9
-  grid:
-    # provisional - refine from overlay
-    first_digit_x: 0.090
-    digit_spacing_x: 0.033
-    first_value_y: 0.080
-    value_spacing_y: 0.013
+  id_columns: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  num_values: 10

@@ -14,13 +14,19 @@ import math
 # Each K constant is the ratio of a bubble measurement to the
 # corresponding pitch (row_pitch for vertical, col_pitch for horizontal).
 # Estimated from curated scans with correct bracket overlay alignment.
-_K_CENTER_EXCLUSION = 0.244    # center letter zone / col_pitch
+# TEMPORARY COMPATIBILITY SHIM -- not a calibration
+# Horizontal K-constants were tuned against an artificially compressed
+# col_pitch (stride-based fp_spacing/3). Dividing by 3 prevents
+# measurement zones from tripling in width after the labeled-column
+# col_pitch fix. This shim must be replaced by proper recalibration
+# from debug overlays with the corrected lattice.
+_K_CENTER_EXCLUSION = 0.244 / 3.0    # ~0.081 RECALIBRATE
 _K_BRACKET_EDGE_H = 0.043     # bracket edge height / row_pitch
 _K_MEAS_INSET_V = 0.043       # vertical measurement inset / row_pitch
-_K_MEAS_INSET_H = 0.067       # horizontal measurement inset / col_pitch
+_K_MEAS_INSET_H = 0.067 / 3.0       # ~0.022 RECALIBRATE
 _K_REFINE_MAX_SHIFT = 0.321   # max template shift / row_pitch
 _K_REFINE_PAD_V = 0.171       # vertical refine padding / row_pitch
-_K_REFINE_PAD_H = 0.177       # horizontal refine padding / col_pitch
+_K_REFINE_PAD_H = 0.177 / 3.0       # ~0.059 RECALIBRATE
 
 
 #============================================
@@ -44,11 +50,11 @@ class SlotMap:
 		# extract timing-mark lattice data
 		fp_x0 = float(transform.get("top_fp_x0", 0.0))
 		# local lattice column pitch (pixels per column)
-		fine_step = float(transform.get("top_col_spacing", 0.0))
-		if fp_x0 <= 0 or fine_step <= 0:
+		col_pitch = float(transform.get("top_col_spacing", 0.0))
+		if fp_x0 <= 0 or col_pitch <= 0:
 			raise ValueError(
 				f"SlotMap: top footprint unavailable "
-				f"(fp_x0={fp_x0}, fine_step={fine_step})")
+				f"(fp_x0={fp_x0}, col_pitch={col_pitch})")
 		question_marks = transform.get("left_question_marks", [])
 		if len(question_marks) < 50:
 			raise ValueError(
@@ -56,7 +62,7 @@ class SlotMap:
 				f"got {len(question_marks)}")
 		# store pitches
 		self._row_pitch = float(transform.get("left_s_q", 0.0))
-		self._col_pitch = float(fine_step)
+		self._col_pitch = float(col_pitch)
 		if (not math.isfinite(self._row_pitch)
 			or not math.isfinite(self._col_pitch)
 			or self._row_pitch <= 0 or self._col_pitch <= 0):
@@ -89,8 +95,22 @@ class SlotMap:
 				raise ValueError(
 					f"SlotMap: choice '{choice}' missing from "
 					f"right choice_columns")
-			self._col_x[("left", choice)] = fp_x0 + left_cols[choice] * fine_step
-			self._col_x[("right", choice)] = fp_x0 + right_cols[choice] * fine_step
+			self._col_x[("left", choice)] = fp_x0 + left_cols[choice] * col_pitch
+			self._col_x[("right", choice)] = fp_x0 + right_cols[choice] * col_pitch
+		# --- student ID geometry from timing marks ---
+		id_marks = transform.get("left_id_marks", [])
+		sid_config = template.get("student_id", {})
+		self._sid_col_indices = sid_config.get("id_columns", [])
+		self._sid_row_pitch = float(transform.get("left_s_id", 0.0))
+		# build student ID row y-centers from left_id_marks
+		self._sid_row_y = []
+		for mark in id_marks:
+			self._sid_row_y.append(float(mark["center_y"]))
+		# build student ID column x-centers from lattice
+		self._sid_col_x = []
+		for col_idx in self._sid_col_indices:
+			x = fp_x0 + col_idx * col_pitch
+			self._sid_col_x.append(x)
 
 	#============================================
 	@property
@@ -260,6 +280,30 @@ class SlotMap:
 			print(f"  {side_label}: {', '.join(parts)}")
 
 	#============================================
+	def print_roi_diagnostic(self) -> None:
+		"""Print ROI width/height/aspect for representative slots.
+
+		Samples Q10, Q50 with choices A, C, E to verify that ROI
+		dimensions are landscape (width > height) after col_pitch fix.
+		"""
+		print("\nROI diagnostics (width x height, aspect=w/h):")
+		sample_slots = [
+			(10, "A"), (10, "C"), (10, "E"),
+			(50, "A"), (50, "C"), (50, "E"),
+		]
+		for q_num, choice in sample_slots:
+			top_y, bot_y, left_x, right_x = self.roi_bounds(
+				q_num, choice)
+			w = right_x - left_x
+			h = bot_y - top_y
+			# avoid divide-by-zero
+			aspect = w / h if h > 0 else 0.0
+			print(f"  Q{q_num:2d}-{choice}:  "
+				f"left={left_x} right={right_x} "
+				f"top={top_y} bot={bot_y}  "
+				f"{w}x{h}  aspect={aspect:.2f}")
+
+	#============================================
 	def measure_cfg(self) -> dict:
 		"""Return measurement constants derived from timing-mark spacing.
 
@@ -288,20 +332,75 @@ class SlotMap:
 		return cfg
 
 	#============================================
-	def student_id_geom(self) -> dict:
-		"""Return pixel geometry dict for student ID bubble scoring.
+	def sid_roi_bounds(self, digit_idx: int, value: int) -> tuple:
+		"""Return (top_y, bot_y, left_x, right_x) for a student ID bubble.
 
-		Student-ID subsystem only. Extends measure_cfg() with half_width
-		and half_height needed by score_bubble_fast(). Answer-bubble code
-		should use measure_cfg() instead.
+		Uses lattice midpoints between neighboring centers, same pattern
+		as roi_bounds(). Primary geometry method for student ID scoring.
+
+		Args:
+			digit_idx: digit position (0 to num_digits-1)
+			value: digit value (0-9)
 
 		Returns:
-			dict with all measure_cfg keys plus half_width, half_height
+			tuple of (top_y, bot_y, left_x, right_x) as integers
 		"""
-		rp = self._row_pitch
-		cp = self._col_pitch
-		result = self.measure_cfg()
-		# dimensionless fractions for student-ID center-plus-box model
-		result["half_width"] = 0.665 * cp
-		result["half_height"] = 0.1175 * rp
-		return result
+		num_rows = len(self._sid_row_y)
+		num_cols = len(self._sid_col_x)
+		# --- vertical bounds from neighboring row centers ---
+		if 0 < value < num_rows - 1:
+			# interior row: midpoint to neighbors
+			top_y = int(round(
+				(self._sid_row_y[value - 1] + self._sid_row_y[value]) / 2.0))
+			bot_y = int(round(
+				(self._sid_row_y[value] + self._sid_row_y[value + 1]) / 2.0))
+		elif value == 0:
+			# first row: extrapolate top by half pitch
+			top_y = int(round(
+				self._sid_row_y[0] - self._sid_row_pitch / 2.0))
+			bot_y = int(round(
+				(self._sid_row_y[0] + self._sid_row_y[1]) / 2.0))
+		else:
+			# last row: extrapolate bottom by half pitch
+			top_y = int(round(
+				(self._sid_row_y[-2] + self._sid_row_y[-1]) / 2.0))
+			bot_y = int(round(
+				self._sid_row_y[-1] + self._sid_row_pitch / 2.0))
+		# --- horizontal bounds from neighboring column centers ---
+		d = digit_idx
+		if 0 < d < num_cols - 1:
+			# interior column: midpoint to neighbors
+			left_x = int(round(
+				(self._sid_col_x[d - 1] + self._sid_col_x[d]) / 2.0))
+			right_x = int(round(
+				(self._sid_col_x[d] + self._sid_col_x[d + 1]) / 2.0))
+		elif d == 0:
+			# first column: extrapolate left by half col_pitch
+			left_x = int(round(
+				self._sid_col_x[0] - self._col_pitch / 2.0))
+			right_x = int(round(
+				(self._sid_col_x[0] + self._sid_col_x[1]) / 2.0))
+		else:
+			# last column: extrapolate right by half col_pitch
+			left_x = int(round(
+				(self._sid_col_x[-2] + self._sid_col_x[-1]) / 2.0))
+			right_x = int(round(
+				self._sid_col_x[-1] + self._col_pitch / 2.0))
+		return (top_y, bot_y, left_x, right_x)
+
+	#============================================
+	def sid_center(self, digit_idx: int, value: int) -> tuple:
+		"""Return (cx, cy) pixel coords for a student ID bubble.
+
+		For debug overlay and labeling only. Not used in scoring.
+
+		Args:
+			digit_idx: digit position (0 to num_digits-1)
+			value: digit value (0-9)
+
+		Returns:
+			tuple of (cx, cy) integer pixel coords
+		"""
+		cx = int(round(self._sid_col_x[digit_idx]))
+		cy = int(round(self._sid_row_y[value]))
+		return (cx, cy)

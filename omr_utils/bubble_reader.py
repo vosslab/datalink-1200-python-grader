@@ -96,82 +96,6 @@ def _refine_bubble_edges_x(gray: numpy.ndarray, cx: int, cy: int,
 
 
 #============================================
-def score_bubble_fast(gray: numpy.ndarray, cx: int, cy: int,
-	radius: int, geom: dict) -> float:
-	"""Score a single bubble using bracket-edge dark reference.
-
-	Student-ID subsystem only. For standalone use (single bubble).
-	The primary scoring path is read_answers() which uses
-	self-referencing scoring across the row.
-
-	Note: this function uses center-plus-box positioning (cx +/- hw,
-	cy +/- hh) because it serves the student ID subsystem, which uses
-	normalized coordinates and does not have a SlotMap. Answer bubble
-	scoring goes through read_answers() -> _stage_measure_rows() which
-	uses lattice bounds from SlotMap instead.
-
-	Uses the dark printed bracket edges (top/bottom borders) as a
-	reference. On unfilled bubbles, the measurement zone is bright
-	while bracket edges are dark, producing a high contrast. On filled
-	bubbles, pencil marks cover the bracket edges too, so both zones
-	are equally dark -- this is detected and returns a high score.
-
-	Args:
-		gray: grayscale image (0=black, 255=white)
-		cx: bubble center x in pixels
-		cy: bubble center y in pixels
-		radius: bubble radius in pixels (used for bounds checking only)
-		geom: pixel geometry dict with half_width and half_height
-
-	Returns:
-		fill score (higher = more likely filled, range ~0.0 to 1.0).
-		Returns -1.0 for out-of-bounds coordinates.
-	"""
-	h, w = gray.shape
-	# bounds check
-	if cx < 0 or cy < 0 or cx >= w or cy >= h:
-		return -1.0
-	# compute edge positions from center using geom half dimensions
-	hh = geom["half_height"]
-	hw = geom["half_width"]
-	top_y = int(cy - hh)
-	bot_y = int(cy + hh)
-	left_x = int(cx - hw)
-	right_x = int(cx + hw)
-	# bracket edges provide a dark reference (printed border)
-	bracket_mean = _compute_bracket_edge_mean(
-		gray, cx, cy, top_y, bot_y, left_x, right_x, geom)
-	if bracket_mean < 0:
-		return -1.0
-	# measurement zone fill level
-	measurement_mean = _compute_edge_mean(
-		gray, cx, cy, top_y, bot_y, left_x, right_x, geom)
-	if measurement_mean < 0:
-		return -1.0
-	# bracket edges should be dark (printed ink). if both zones are
-	# bright (no bracket edges found), the bubble position may be
-	# misaligned or this is a blank area -- return low score
-	if bracket_mean > 200.0 and measurement_mean > 200.0:
-		score = 0.0
-		return score
-	# when bracket edges are very dark (near zero), use 255 as reference
-	if bracket_mean <= 1.0:
-		score = (255.0 - measurement_mean) / 255.0
-		return score
-	# on filled bubbles, pencil covers bracket edges too, so
-	# measurement_mean <= bracket_mean indicates a filled bubble
-	if measurement_mean <= bracket_mean:
-		score = 1.0
-		return score
-	# unfilled: measurement is brighter than bracket edges
-	# higher bracket-to-measurement contrast = less filled
-	score = 1.0 - (measurement_mean - bracket_mean) / (255.0 - bracket_mean)
-	# clamp to valid range
-	score = max(0.0, score)
-	return score
-
-
-#============================================
 def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
 	cx: int, cy: int, measure_cfg: dict,
 	fallback_bounds: tuple) -> tuple:
@@ -221,62 +145,6 @@ def _validate_bubble_rect(top_y: int, bot_y: int, left_x: int, right_x: int,
 		return (top_y, bot_y, left_x, right_x, cx_out)
 	# fall back to lattice bounds
 	return (fb_top, fb_bot, fb_left, fb_right, cx)
-
-
-#============================================
-def _compute_bracket_edge_mean(gray: numpy.ndarray, cx: int, cy: int,
-	top_y: int, bot_y: int, left_x: int, right_x: int,
-	measure_cfg: dict) -> float:
-	"""Compute mean brightness of the top and bottom bracket edge strips.
-
-	Measures the dark printed bracket borders at the top and bottom of
-	the bubble box, using the left and right side strips (excluding
-	the center letter zone). Uses detected edge positions for precise
-	measurement zones.
-
-	Args:
-		gray: grayscale image (0=black, 255=white)
-		cx: bubble center x in pixels
-		cy: bubble center y in pixels
-		top_y: detected top edge y position
-		bot_y: detected bottom edge y position
-		left_x: detected left edge x position
-		right_x: detected right edge x position
-		measure_cfg: measurement constants from SlotMap.measure_cfg()
-
-	Returns:
-		average brightness of bracket edge strips (0-255 scale),
-		or -1.0 if out of bounds
-	"""
-	h, w = gray.shape
-	if cx < 0 or cy < 0 or cx >= w or cy >= h:
-		return -1.0
-	ce = measure_cfg["center_exclusion"]
-	beh = measure_cfg["bracket_edge_height"]
-	# horizontal bounds: left and right strips excluding center letter
-	lx1 = max(0, left_x)
-	lx2 = max(0, cx - ce)
-	rx1 = min(w, cx + ce)
-	rx2 = min(w, right_x)
-	# top bracket edge strip (from detected top edge)
-	top_y1 = max(0, top_y)
-	top_y2 = max(0, top_y + beh)
-	# bottom bracket edge strip (from detected bottom edge)
-	bot_y1 = min(h, bot_y - beh)
-	bot_y2 = min(h, bot_y)
-	# int-cast at array slicing boundary
-	tl = gray[int(top_y1):int(top_y2), int(lx1):int(lx2)]
-	tr = gray[int(top_y1):int(top_y2), int(rx1):int(rx2)]
-	bl = gray[int(bot_y1):int(bot_y2), int(lx1):int(lx2)]
-	br = gray[int(bot_y1):int(bot_y2), int(rx1):int(rx2)]
-	# combine all bracket edge pixels
-	all_pixels = numpy.concatenate([
-		tl.ravel(), tr.ravel(), bl.ravel(), br.ravel()
-	])
-	if all_pixels.size == 0:
-		return -1.0
-	result = float(numpy.mean(all_pixels))
-	return result
 
 
 #============================================
@@ -637,8 +505,15 @@ def read_answers(image: numpy.ndarray, template: dict,
 	col_pitch = measure_cfg["col_pitch"]
 	print(f"  slot_map geometry: row_pitch={row_pitch:.1f}px"
 		f" col_pitch={col_pitch:.1f}px")
+	# print K-constant pixel products for measurement zone verification
+	print(f"  K pixel products:"
+		f" center_excl={measure_cfg['center_exclusion']:.1f}px"
+		f" inset_h={measure_cfg['measurement_inset_h']:.1f}px"
+		f" refine_pad_h={measure_cfg['refine_pad_h']:.1f}px")
 	# print lattice diagnostic for stride verification
 	slot_map.print_lattice_diagnostic()
+	# print ROI diagnostics for representative slots
+	slot_map.print_roi_diagnostic()
 	# localize rows using pure lattice positions
 	raw_data = _stage_localize_rows(gray, template, measure_cfg, slot_map)
 	# optional NCC template matching refinement

@@ -59,8 +59,16 @@ No other geometry formula is allowed for answer placement.
 ## 5. SlotMap is the single authority
 
 `SlotMap` is the only module that maps `(question_number, choice_letter)`
-to `(pixel_x, pixel_y)`. No other module may compute answer coordinates.
-All geometry must pass through SlotMap.
+to `(pixel_x, pixel_y)` for answer bubbles and `(digit_index, value)`
+to `(pixel_x, pixel_y)` for student ID bubbles. No other module may
+compute answer or student ID coordinates. All geometry must pass
+through SlotMap.
+
+Student ID geometry uses the same horizontal lattice as answer bubbles.
+Vertical positions come from `left_id_marks` (10 marks with `center_y`).
+`sid_roi_bounds(digit_idx, value)` is the primary geometry method for
+student ID scoring. `sid_center(digit_idx, value)` exists only for
+debug overlay and labeling.
 
 ## 6. ROI construction
 
