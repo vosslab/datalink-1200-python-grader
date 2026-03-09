@@ -16,7 +16,10 @@ def _build_summary_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	"""
 	# bold font for header row
 	bold_font = openpyxl.styles.Font(bold=True)
-	headers = ["Student ID", "Filename", "Raw Score", "Total", "Percentage"]
+	headers = [
+		"Student ID", "Filename", "Number Blanks",
+		"Number Multiple", "Raw Score", "Total", "Percentage",
+	]
 	for col_idx, header in enumerate(headers, start=1):
 		cell = ws.cell(row=1, column=col_idx, value=header)
 		cell.font = bold_font
@@ -25,11 +28,13 @@ def _build_summary_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 	for row_idx, graded in enumerate(sorted_results, start=2):
 		ws.cell(row=row_idx, column=1, value=graded["student_id"])
 		ws.cell(row=row_idx, column=2, value=graded.get("filename", ""))
-		ws.cell(row=row_idx, column=3, value=graded["raw_score"])
-		ws.cell(row=row_idx, column=4, value=graded["total_questions"])
+		ws.cell(row=row_idx, column=3, value=graded.get("num_blank", 0))
+		ws.cell(row=row_idx, column=4, value=graded.get("num_multiple", 0))
+		ws.cell(row=row_idx, column=5, value=graded["raw_score"])
+		ws.cell(row=row_idx, column=6, value=graded["total_questions"])
 		# format percentage to 1 decimal place
 		pct_value = round(graded["percentage"], 1)
-		ws.cell(row=row_idx, column=5, value=pct_value)
+		ws.cell(row=row_idx, column=7, value=pct_value)
 
 
 #============================================
@@ -152,14 +157,17 @@ def _build_question_analysis_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 		num_incorrect = 0
 		num_blank = 0
 		for graded in graded_results:
+			status = graded.get("per_question_status", {}).get(q, "")
 			score = graded["per_question"].get(q, -1)
-			if score == 1:
+			if status == "blank":
+				num_blank += 1
+			elif score == 1:
 				num_correct += 1
 			elif score == 0:
 				num_incorrect += 1
 			else:
 				num_blank += 1
-		total_graded = num_correct + num_incorrect
+		total_graded = num_correct + num_incorrect + num_blank
 		if total_graded > 0:
 			pct_correct = round(num_correct / total_graded * 100, 1)
 		else:
@@ -176,12 +184,39 @@ def _build_question_analysis_sheet(ws: openpyxl.worksheet.worksheet.Worksheet,
 
 
 #============================================
+def _build_blank_multiple_detail_sheet(
+	ws: openpyxl.worksheet.worksheet.Worksheet,
+	graded_results: list) -> None:
+	"""Populate a per-student blank/multiple detail sheet."""
+	bold_font = openpyxl.styles.Font(bold=True)
+	headers = [
+		"Student ID", "Filename", "Number Blanks", "Number Multiple",
+		"Blank Questions", "Multiple Questions",
+	]
+	for col_idx, header in enumerate(headers, start=1):
+		cell = ws.cell(row=1, column=col_idx, value=header)
+		cell.font = bold_font
+	sorted_results = sorted(graded_results, key=lambda g: g["student_id"])
+	for row_idx, graded in enumerate(sorted_results, start=2):
+		blank_qs = graded.get("blank_questions", [])
+		multiple_qs = graded.get("multiple_questions", [])
+		ws.cell(row=row_idx, column=1, value=graded["student_id"])
+		ws.cell(row=row_idx, column=2, value=graded.get("filename", ""))
+		ws.cell(row=row_idx, column=3, value=graded.get("num_blank", 0))
+		ws.cell(row=row_idx, column=4, value=graded.get("num_multiple", 0))
+		ws.cell(row=row_idx, column=5, value=" ".join(
+			f"q{q}" for q in blank_qs))
+		ws.cell(row=row_idx, column=6, value=" ".join(
+			f"q{q}" for q in multiple_qs))
+
+
+#============================================
 def write_scoring_summary(output_path: str, key_data: dict,
 	student_results: list, graded_results: list) -> None:
 	"""Write a multi-tab XLSX scoring summary workbook.
 
-	Creates four sheets: Summary, Detailed Grades, Student Answers,
-	and Question Analysis.
+	Creates five sheets: Summary, Detailed Grades, Student Answers,
+	Question Analysis, and Blank Multiple Detail.
 
 	Args:
 		output_path: path for the output .xlsx file
@@ -209,4 +244,7 @@ def write_scoring_summary(output_path: str, key_data: dict,
 	_build_question_analysis_sheet(
 		ws_analysis, key_data, graded_results, num_questions
 	)
+	# Tab 5: Blank and multiple detail per student
+	ws_blank_multi = wb.create_sheet("Blank Multiple Detail")
+	_build_blank_multiple_detail_sheet(ws_blank_multi, graded_results)
 	wb.save(output_path)

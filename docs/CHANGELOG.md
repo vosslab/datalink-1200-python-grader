@@ -5,10 +5,16 @@
 ### Fixes and Maintenance
 
 - Fixed student ID timing mark detection in [omr_utils/timing_marks_left.py](../omr_utils/timing_marks_left.py). The one-big-gap partitioning in `_fit_left_footprint()` was stealing the first 2 student ID marks as "top marks" when the actual top 2 marks were not detected. Now uses largest-internal-gap detection within the upper group to correctly split top marks from ID marks. Handles the case where all 10 upper marks are ID marks (top 2 missing) by setting `seg_a_ys` to empty and predicting top marks by backward extrapolation.
+- Fixed blank accounting in [omr_utils/xlsx_writer.py](../omr_utils/xlsx_writer.py) Question Analysis tab. `Num Blank` now reflects student rows flagged as `BLANK` on keyed questions instead of treating all non-`0/1` cells as blank.
+- Updated percentage denominator in Question Analysis to include blanks (`correct + incorrect + blank`) so blank responses reduce `Pct Correct`.
 
 ### Additions and New Features
 
 - Added "Filename" column to Summary, Detailed Grades, and Student Answers sheets in `scoring_summary.xlsx`. Source image base name is threaded through [run_pipeline.py](../run_pipeline.py) into graded results and written by [omr_utils/xlsx_writer.py](../omr_utils/xlsx_writer.py).
+- Added blank/multiple outcome tracking in [grade_answers.py](../grade_answers.py). `grade_student()` now parses per-question extraction flags and returns `per_question_status`, `num_blank`, `num_multiple`, `blank_questions`, and `multiple_questions` while keeping raw score semantics unchanged.
+- Added `Number Blanks` and `Number Multiple` columns to the Summary sheet in [omr_utils/xlsx_writer.py](../omr_utils/xlsx_writer.py).
+- Added new `Blank Multiple Detail` sheet in [omr_utils/xlsx_writer.py](../omr_utils/xlsx_writer.py) with per-student blank/multiple counts and question lists.
+- Added focused tests in [tests/test_grade_answers.py](../tests/test_grade_answers.py) and expanded [tests/test_xlsx_writer.py](../tests/test_xlsx_writer.py) to validate blank/multiple grading metadata and workbook output.
 
 ### Decisions and Failures
 

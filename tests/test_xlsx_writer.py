@@ -30,14 +30,14 @@ def synthetic_data(tmp_path: os.PathLike) -> dict:
 		"filename": "scan_001",
 		"answers": {1: "A", 2: "B", 3: "A", 4: "D", 5: ""},
 		"confidences": {1: 0.4, 2: 0.3, 3: 0.2, 4: 0.5, 5: 0.0},
-		"flags": "",
+		"flags": "q5:BLANK",
 	}
 	student2 = {
 		"student_id": "S002",
 		"filename": "scan_002",
 		"answers": {1: "C", 2: "B", 3: "C", 4: "D", 5: "E"},
 		"confidences": {1: 0.1, 2: 0.4, 3: 0.5, 4: 0.3, 5: 0.2},
-		"flags": "",
+		"flags": "q3:MULTIPLE(A)",
 	}
 	student_results = [student1, student2]
 	graded1 = {
@@ -46,16 +46,38 @@ def synthetic_data(tmp_path: os.PathLike) -> dict:
 		"raw_score": 3,
 		"total_questions": 5,
 		"percentage": 60.0,
-		"per_question": {1: 1, 2: 1, 3: 0, 4: 1, 5: -1},
+		"per_question": {1: 1, 2: 1, 3: 0, 4: 1, 5: 0},
+		"per_question_status": {
+			1: "correct",
+			2: "correct",
+			3: "wrong_choice",
+			4: "correct",
+			5: "blank",
+		},
+		"num_blank": 1,
+		"num_multiple": 0,
+		"blank_questions": [5],
+		"multiple_questions": [],
 		"low_confidence": [],
 	}
 	graded2 = {
 		"student_id": "S002",
 		"filename": "scan_002",
-		"raw_score": 4,
+		"raw_score": 3,
 		"total_questions": 5,
-		"percentage": 80.0,
-		"per_question": {1: 0, 2: 1, 3: 1, 4: 1, 5: 1},
+		"percentage": 60.0,
+		"per_question": {1: 0, 2: 1, 3: 0, 4: 1, 5: 1},
+		"per_question_status": {
+			1: "wrong_choice",
+			2: "correct",
+			3: "multiple",
+			4: "correct",
+			5: "correct",
+		},
+		"num_blank": 0,
+		"num_multiple": 1,
+		"blank_questions": [],
+		"multiple_questions": [3],
 		"low_confidence": [],
 	}
 	graded_results = [graded1, graded2]
@@ -80,11 +102,11 @@ def test_output_file_created(synthetic_data: dict) -> None:
 
 
 #============================================
-def test_workbook_has_four_sheets(synthetic_data: dict) -> None:
-	"""Verify workbook has 4 sheets with correct names."""
+def test_workbook_has_five_sheets(synthetic_data: dict) -> None:
+	"""Verify workbook has 5 sheets with correct names."""
 	wb = openpyxl.load_workbook(synthetic_data["xlsx_path"])
 	expected = ["Summary", "Detailed Grades", "Student Answers",
-		"Question Analysis"]
+		"Question Analysis", "Blank Multiple Detail"]
 	assert wb.sheetnames == expected
 
 
@@ -105,14 +127,18 @@ def test_summary_values(synthetic_data: dict) -> None:
 	# row 2 = S001 (sorted first), row 3 = S002
 	assert ws.cell(row=2, column=1).value == "S001"
 	assert ws.cell(row=2, column=2).value == "scan_001"
-	assert ws.cell(row=2, column=3).value == 3
-	assert ws.cell(row=2, column=4).value == 5
-	assert ws.cell(row=2, column=5).value == 60.0
+	assert ws.cell(row=2, column=3).value == 1
+	assert ws.cell(row=2, column=4).value == 0
+	assert ws.cell(row=2, column=5).value == 3
+	assert ws.cell(row=2, column=6).value == 5
+	assert ws.cell(row=2, column=7).value == 60.0
 	assert ws.cell(row=3, column=1).value == "S002"
 	assert ws.cell(row=3, column=2).value == "scan_002"
-	assert ws.cell(row=3, column=3).value == 4
-	assert ws.cell(row=3, column=4).value == 5
-	assert ws.cell(row=3, column=5).value == 80.0
+	assert ws.cell(row=3, column=3).value == 0
+	assert ws.cell(row=3, column=4).value == 1
+	assert ws.cell(row=3, column=5).value == 3
+	assert ws.cell(row=3, column=6).value == 5
+	assert ws.cell(row=3, column=7).value == 60.0
 
 
 #============================================
@@ -120,16 +146,17 @@ def test_detailed_grades_values(synthetic_data: dict) -> None:
 	"""Verify Detailed Grades sheet has correct 1/0/None cells."""
 	wb = openpyxl.load_workbook(synthetic_data["xlsx_path"])
 	ws = wb["Detailed Grades"]
-	# row 2 = S001: per_question {1:1, 2:1, 3:0, 4:1, 5:-1}
+	# row 2 = S001: per_question {1:1, 2:1, 3:0, 4:1, 5:0}
 	assert ws.cell(row=2, column=2).value == "scan_001"  # Filename
 	assert ws.cell(row=2, column=3).value == 1   # Q1 correct
 	assert ws.cell(row=2, column=4).value == 1   # Q2 correct
 	assert ws.cell(row=2, column=5).value == 0   # Q3 incorrect
 	assert ws.cell(row=2, column=6).value == 1   # Q4 correct
-	assert ws.cell(row=2, column=7).value is None  # Q5 not graded
-	# row 3 = S002: per_question {1:0, 2:1, 3:1, 4:1, 5:1}
+	assert ws.cell(row=2, column=7).value == 0   # Q5 blank (incorrect)
+	# row 3 = S002: per_question {1:0, 2:1, 3:0, 4:1, 5:1}
 	assert ws.cell(row=3, column=3).value == 0   # Q1 incorrect
 	assert ws.cell(row=3, column=4).value == 1   # Q2 correct
+	assert ws.cell(row=3, column=5).value == 0   # Q3 multiple (incorrect)
 	assert ws.cell(row=3, column=7).value == 1   # Q5 correct
 
 
@@ -170,7 +197,32 @@ def test_question_analysis_counts(synthetic_data: dict) -> None:
 	assert ws.cell(row=3, column=2).value == 2
 	assert ws.cell(row=3, column=3).value == 0
 	assert ws.cell(row=3, column=5).value == 100.0
-	# Q5: S001=-1 (blank), S002=1 (correct) -> 1 correct, 0 incorrect, 1 blank
+	# Q3: both incorrect (wrong + multiple) -> 0 correct, 2 incorrect, 0 blank
+	assert ws.cell(row=4, column=2).value == 0
+	assert ws.cell(row=4, column=3).value == 2
+	assert ws.cell(row=4, column=4).value == 0
+	assert ws.cell(row=4, column=5).value == 0.0
+	# Q5: S001=blank, S002=correct -> 1 correct, 0 incorrect, 1 blank
 	assert ws.cell(row=6, column=2).value == 1   # num correct
 	assert ws.cell(row=6, column=3).value == 0   # num incorrect
 	assert ws.cell(row=6, column=4).value == 1   # num blank
+	assert ws.cell(row=6, column=5).value == 50.0  # pct correct
+
+
+#============================================
+def test_blank_multiple_detail_sheet(synthetic_data: dict) -> None:
+	"""Verify blank/multiple per-student detail sheet values."""
+	wb = openpyxl.load_workbook(synthetic_data["xlsx_path"])
+	ws = wb["Blank Multiple Detail"]
+	assert ws.cell(row=2, column=1).value == "S001"
+	assert ws.cell(row=2, column=2).value == "scan_001"
+	assert ws.cell(row=2, column=3).value == 1
+	assert ws.cell(row=2, column=4).value == 0
+	assert ws.cell(row=2, column=5).value == "q5"
+	assert ws.cell(row=2, column=6).value is None
+	assert ws.cell(row=3, column=1).value == "S002"
+	assert ws.cell(row=3, column=2).value == "scan_002"
+	assert ws.cell(row=3, column=3).value == 0
+	assert ws.cell(row=3, column=4).value == 1
+	assert ws.cell(row=3, column=5).value is None
+	assert ws.cell(row=3, column=6).value == "q3"

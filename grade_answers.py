@@ -5,9 +5,32 @@
 import os
 import csv
 import argparse
+import re
 
 # local repo modules
 import omr_utils.csv_writer
+
+
+#============================================
+def _parse_question_flags(flags_text: str) -> dict:
+	"""Parse qNN:FLAG tokens from extraction flags text.
+
+	Args:
+		flags_text: space-delimited flag tokens from answers CSV
+
+	Returns:
+		dict mapping question number (int) to flag string
+	"""
+	if not flags_text:
+		return {}
+	result = {}
+	for token in flags_text.split():
+		match = re.match(r"^q(\d+):(.+)$", token)
+		if not match:
+			continue
+		q_num = int(match.group(1))
+		result[q_num] = match.group(2).strip()
+	return result
 
 
 #============================================
@@ -50,28 +73,50 @@ def grade_student(student_data: dict, key_data: dict) -> dict:
 
 	Returns:
 		dict with keys: student_id, raw_score, total_questions,
-		percentage, per_question (list of 0/1/-1), low_confidence (list)
+		percentage, per_question (dict of 0/1/-1), per_question_status
+		(dict), num_blank, num_multiple, blank_questions,
+		multiple_questions, low_confidence (list)
 	"""
 	student_answers = student_data["answers"]
 	key_answers = key_data["answers"]
 	student_conf = student_data.get("confidences", {})
+	flag_by_question = _parse_question_flags(student_data.get("flags", ""))
 	correct = 0
 	total = 0
 	per_question = {}
+	per_question_status = {}
 	low_confidence = []
+	num_blank = 0
+	num_multiple = 0
+	blank_questions = []
+	multiple_questions = []
 	for q_num in sorted(key_answers.keys()):
 		key_answer = key_answers.get(q_num, "")
 		student_answer = student_answers.get(q_num, "")
+		flag = flag_by_question.get(q_num, "")
 		# skip questions where key is blank (not part of exam)
 		if not key_answer:
 			per_question[q_num] = -1
+			per_question_status[q_num] = "not_graded"
 			continue
 		total += 1
-		if student_answer == key_answer:
+		if flag == "BLANK":
+			per_question[q_num] = 0
+			per_question_status[q_num] = "blank"
+			num_blank += 1
+			blank_questions.append(q_num)
+		elif flag.startswith("MULTIPLE("):
+			per_question[q_num] = 0
+			per_question_status[q_num] = "multiple"
+			num_multiple += 1
+			multiple_questions.append(q_num)
+		elif student_answer == key_answer:
 			correct += 1
 			per_question[q_num] = 1
+			per_question_status[q_num] = "correct"
 		else:
 			per_question[q_num] = 0
+			per_question_status[q_num] = "wrong_choice"
 		# track low confidence answers
 		conf = student_conf.get(q_num, 0.0)
 		if conf < 0.05 and student_answer:
@@ -83,6 +128,11 @@ def grade_student(student_data: dict, key_data: dict) -> dict:
 		"total_questions": total,
 		"percentage": percentage,
 		"per_question": per_question,
+		"per_question_status": per_question_status,
+		"num_blank": num_blank,
+		"num_multiple": num_multiple,
+		"blank_questions": blank_questions,
+		"multiple_questions": multiple_questions,
 		"low_confidence": low_confidence,
 	}
 	return result
@@ -93,7 +143,8 @@ def write_graded_csv(output_path: str, graded: dict,
 	student_data: dict, key_data: dict) -> None:
 	"""Write graded results to a CSV file.
 
-	Format: student_id,raw_score,total,percentage,q1,q2,...,q100,flags
+	Format: student_id,raw_score,total,percentage,q1,q2,...,q100,flags,
+	num_blank,num_multiple,blank_questions,multiple_questions
 
 	Args:
 		output_path: path for the output CSV file
@@ -108,6 +159,10 @@ def write_graded_csv(output_path: str, graded: dict,
 		header.append(f"q{i}")
 	header.append("low_confidence")
 	header.append("flags")
+	header.append("num_blank")
+	header.append("num_multiple")
+	header.append("blank_questions")
+	header.append("multiple_questions")
 	# build row
 	row = [
 		graded["student_id"],
@@ -128,6 +183,10 @@ def write_graded_csv(output_path: str, graded: dict,
 	row.append(lc_str)
 	# flags from original extraction
 	row.append(student_data.get("flags", ""))
+	row.append(graded.get("num_blank", 0))
+	row.append(graded.get("num_multiple", 0))
+	row.append(" ".join(f"q{q}" for q in graded.get("blank_questions", [])))
+	row.append(" ".join(f"q{q}" for q in graded.get("multiple_questions", [])))
 	# ensure output directory exists
 	output_dir = os.path.dirname(output_path)
 	if output_dir:
