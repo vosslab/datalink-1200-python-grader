@@ -482,3 +482,185 @@ def draw_ncc_shift_overlay(image: numpy.ndarray,
 				(cx, cy + arm), cyan, 1)
 	cv2.addWeighted(overlay_final, alpha, debug, 1.0 - alpha, 0, debug)
 	return debug
+
+
+#============================================
+def _draw_answer_label(image: numpy.ndarray, q_num: int,
+	key_answer: str, choices: list,
+	slot_map: "omr_utils.slot_map.SlotMap",
+	rp: float, letter_scale: float, letter_thick: int,
+	letter_bg_thick: int, color: tuple) -> None:
+	"""Draw correct-answer letter label to the right of the E bubble.
+
+	Draws a filled white rectangle behind the letter for contrast,
+	then the colored letter on top.
+
+	Args:
+		image: BGR image to draw on (modified in place)
+		q_num: question number
+		key_answer: correct answer letter
+		choices: list of valid choice letters
+		slot_map: SlotMap instance for geometry
+		rp: row pitch in pixels
+		letter_scale: cv2 font scale
+		letter_thick: cv2 font thickness for foreground letter
+		letter_bg_thick: cv2 font thickness for background (unused)
+		color: BGR color tuple for the letter
+	"""
+	if not key_answer or key_answer not in choices:
+		return
+	font = cv2.FONT_HERSHEY_SIMPLEX
+	_, _, _, e_right_x = slot_map.roi_bounds(q_num, "E")
+	text_x = int(e_right_x) + int(rp * 0.15)
+	text_y = slot_map.row_center(q_num) + int(rp * 0.18)
+	# measure text size for white background rectangle
+	(tw, th), baseline = cv2.getTextSize(
+		key_answer, font, letter_scale, letter_thick)
+	pad = max(2, int(rp * 0.06))
+	# filled white rectangle behind the letter
+	cv2.rectangle(image,
+		(text_x - pad, text_y - th - pad),
+		(text_x + tw + pad, text_y + baseline + pad),
+		(255, 255, 255), -1)
+	# colored letter on top
+	cv2.putText(image, key_answer,
+		(text_x, text_y),
+		font, letter_scale, color, letter_thick)
+
+
+#============================================
+def draw_student_overlay(image: numpy.ndarray, template: dict,
+	results: list, slot_map: "omr_utils.slot_map.SlotMap",
+	graded: dict, key_data: dict) -> numpy.ndarray:
+	"""Draw student-friendly graded overlay on a registered scan image.
+
+	Color-codes each question bubble based on grading outcome:
+	- Correct: blue-green outline on student's answer
+	- Wrong: red-orange outline on student's answer, blue-green on correct
+	- Blank: blue-green outline on correct answer
+	- Not graded: no annotation
+
+	Prints score summary in the top margin area.
+
+	Args:
+		image: BGR registered image
+		template: loaded template dictionary
+		results: list of answer dicts from read_answers
+		slot_map: SlotMap instance for lattice-based ROI bounds
+		graded: dict from grade_student() with per_question_status
+		key_data: dict from read_answers_csv (answer key)
+
+	Returns:
+		annotated copy of the image
+	"""
+	debug = image.copy()
+	h, w = debug.shape[:2]
+	# scale factor: row_pitch gives a natural DPI-independent unit
+	rp = slot_map.row_pitch
+	# rectangle outline thickness scales with row pitch
+	box_thick = max(2, int(round(rp * 0.08)))
+	# letter annotation font scale and thickness from row pitch
+	letter_scale = rp / 28.0
+	letter_thick = max(2, int(round(rp * 0.07)))
+	# white outline behind letter for background contrast
+	letter_bg_thick = letter_thick + max(2, int(round(rp * 0.08)))
+	# colors (BGR)
+	teal = (180, 180, 0)
+	red_orange = (0, 80, 220)
+	dark_gold = (0, 160, 200)
+	choices = template["answers"]["choices"]
+	num_questions = template["answers"]["num_questions"]
+	key_answers = key_data["answers"]
+	per_question_status = graded["per_question_status"]
+	# blank indicator circle: diameter equals row height
+	blank_radius = max(3, int(round(rp / 2.0)))
+	# build lookup of student answers from results list
+	student_answers = {}
+	for entry in results:
+		q_num = entry["question"]
+		student_answers[q_num] = entry["answer"]
+	# draw bubble outlines for each question
+	for q_num in range(1, num_questions + 1):
+		status = per_question_status.get(q_num, "not_graded")
+		if status == "not_graded":
+			# key blank for this question, skip
+			continue
+		key_answer = key_answers.get(q_num, "")
+		student_answer = student_answers.get(q_num, "")
+		if status == "correct":
+			# blue-green outline on student's answered bubble
+			top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
+				q_num, student_answer)
+			cv2.rectangle(debug,
+				(int(left_x), int(top_y)),
+				(int(right_x), int(bot_y)),
+				teal, box_thick)
+		elif status == "wrong_choice" or status == "multiple":
+			# red-orange outline on student's answered bubble
+			if student_answer and student_answer in choices:
+				top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
+					q_num, student_answer)
+				cv2.rectangle(debug,
+					(int(left_x), int(top_y)),
+					(int(right_x), int(bot_y)),
+					red_orange, box_thick)
+			# blue-green outline on correct answer bubble
+			if key_answer and key_answer in choices:
+				top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
+					q_num, key_answer)
+				cv2.rectangle(debug,
+					(int(left_x), int(top_y)),
+					(int(right_x), int(bot_y)),
+					teal, box_thick)
+			# correct letter annotation
+			_draw_answer_label(debug, q_num, key_answer, choices,
+				slot_map, rp, letter_scale, letter_thick,
+				letter_bg_thick, red_orange)
+		elif status == "blank":
+			# dark gold filled circle left of A bubble as blank indicator
+			a_top_y, a_bot_y, a_left_x, _ = slot_map.roi_bounds(
+				q_num, "A")
+			circle_x = int(a_left_x) - int(rp * 0.35)
+			circle_y = slot_map.row_center(q_num)
+			cv2.circle(debug, (circle_x, circle_y),
+				blank_radius, dark_gold, -1)
+			# blue-green outline on correct answer bubble
+			if key_answer and key_answer in choices:
+				top_y, bot_y, left_x, right_x = slot_map.roi_bounds(
+					q_num, key_answer)
+				cv2.rectangle(debug,
+					(int(left_x), int(top_y)),
+					(int(right_x), int(bot_y)),
+					teal, box_thick)
+			# correct letter annotation
+			_draw_answer_label(debug, q_num, key_answer, choices,
+				slot_map, rp, letter_scale, letter_thick,
+				letter_bg_thick, red_orange)
+	# draw score summary centered at bottom
+	raw_score = graded["raw_score"]
+	total_q = graded["total_questions"]
+	pct = graded["percentage"]
+	score_text = f"Score: {raw_score}/{total_q} ({pct:.1f}%)"
+	# scale score font with row pitch (DPI-independent)
+	score_scale = rp / 25.0
+	score_thick = max(2, int(round(rp * 0.08)))
+	font = cv2.FONT_HERSHEY_SIMPLEX
+	navy_blue = (128, 0, 0)
+	# measure text size for centering and background
+	(tw, th), baseline = cv2.getTextSize(
+		score_text, font, score_scale, score_thick)
+	pad = int(rp * 0.2)
+	# center horizontally, place near bottom
+	text_x = (w - tw) // 2
+	text_y = h - pad - baseline
+	# white background rectangle for readability on print
+	cv2.rectangle(debug,
+		(text_x - pad, text_y - th - pad),
+		(text_x + tw + pad, text_y + baseline + pad),
+		(255, 255, 255), -1)
+	# navy blue text
+	cv2.putText(debug, score_text,
+		(text_x, text_y),
+		font, score_scale,
+		navy_blue, score_thick)
+	return debug

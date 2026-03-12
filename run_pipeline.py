@@ -197,6 +197,9 @@ def process_single_image(image_path: str, template: dict,
 		"csv_path": csv_path,
 		"student_id": student_id,
 		"num_answered": num_answered,
+		"registered_image": registered,
+		"answers": answers,
+		"slot_map": slot_map,
 	}
 	return result
 
@@ -256,6 +259,14 @@ def main() -> None:
 		student_data["filename"] = base_name
 		grade_csv = os.path.join(args.output_dir, f"{base_name}_grades.csv")
 		grade_answers.write_graded_csv(grade_csv, graded, student_data, key_data)
+		# generate student-friendly graded overlay image
+		graded_img = omr_utils.debug_drawing.draw_student_overlay(
+			student_result["registered_image"], template,
+			student_result["answers"], student_result["slot_map"],
+			graded, key_data)
+		graded_path = os.path.join(args.output_dir, f"{base_name}_graded.png")
+		cv2.imwrite(graded_path, graded_img)
+		print(f"    graded: {graded_path}")
 		print(f"    score: {graded['raw_score']}/{graded['total_questions']}"
 			f" ({graded['percentage']:.1f}%)")
 		if graded["low_confidence"]:

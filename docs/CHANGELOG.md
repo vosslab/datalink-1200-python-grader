@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-03-15
+
+### Additions and New Features
+
+- Added student-friendly graded overlay image generation. New `draw_student_overlay()` function in [omr_utils/debug_drawing.py](../omr_utils/debug_drawing.py) draws color-coded bubble outlines on registered scan images: blue-green for correct answers, red-orange for wrong answers with the correct answer highlighted and labeled, and blue-green highlights for blank questions showing the correct choice. Score summary is printed in the top margin.
+- Integrated graded overlay into [run_pipeline.py](../run_pipeline.py) student processing loop. Runs automatically for every student (not gated behind `--debug`). Outputs `{base_name}_graded.png` to the output directory.
+- Extended `process_single_image()` return dict to include `registered_image`, `answers`, and `slot_map` for downstream use by the graded overlay generator.
+
 ## 2026-03-14
 
 ### Fixes and Maintenance
